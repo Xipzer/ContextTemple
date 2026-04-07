@@ -1,0 +1,69 @@
+{
+  "name": "contexttemple",
+  "version": "0.1.0",
+  "description": "A hybrid behavioral and episodic memory layer for LLM agents.",
+  "type": "module",
+  "packageManager": "bun@1.2.15",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": "dist/cli.js",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./src": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": {
+      "types": "./src/*.ts",
+      "default": "./src/*.ts"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rimraf dist \"*.tsbuildinfo\" && tsc && chmod +x dist/cli.js",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "dev": "bun run src/cli.ts",
+    "serve": "bun run src/cli.ts serve",
+    "prepublishOnly": "bun run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Xipzer/ContextTemple.git",
+    "directory": "."
+  },
+  "homepage": "https://github.com/Xipzer/ContextTemple#readme",
+  "bugs": {
+    "url": "https://github.com/Xipzer/ContextTemple/issues"
+  },
+  "keywords": [
+    "llm",
+    "memory",
+    "agent",
+    "behavioral-memory",
+    "episodic-memory",
+    "bun",
+    "hono",
+    "drizzle"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "bun-types": "^1.3.11",
+    "rimraf": "^6.1.3",
+    "typescript": "^6.0.2"
+  }
+}
