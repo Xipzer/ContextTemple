@@ -42,7 +42,7 @@ ContextTemple combines both:
 
 ## Release Status
 
-`1.1.0` is the first release where the original planned feature surface is fully complete with no active roadmap debt remaining.
+`1.2.0` closes the frontier model suitability gap so the system works equally well for local models and frontier agents.
 
 Current shipped surface:
 
@@ -52,14 +52,17 @@ Current shipped surface:
 - hybrid retrieval with reranking
 - runtime orchestration
 - contradiction-aware lifecycle handling
-- benchmark harness
-- llama.cpp bridge
-- MCP server
+- benchmark harness (retrieval, behavioral replay, calibration, uplift, frontier)
+- llama.cpp bridge (streamed and non-streamed)
+- MCP server (18 tools)
+- agent instructions generator (CLAUDE.md / AGENTS.md compatible)
+- Kimaki/OpenCode session transcript adapter
+- post-session consolidation and instructions update hooks
 - backup and restore tooling
 
 ## Current implementation
 
-`1.1.0` ships the complete release surface:
+`1.2.0` ships the complete release surface:
 
 - SQLite-backed local storage through Drizzle + libSQL
 - canonical transcript ingestion with persisted replayable events
@@ -236,7 +239,7 @@ Future work from here is optional expansion rather than unfinished core scope.
 
 ## Version
 
-Current release: `1.1.0`
+Current release: `1.2.0`
 
 ## License
 

@@ -9,6 +9,7 @@ import { buildStartupContext } from "../context.ts";
 import { openTempleDatabase } from "../db.ts";
 import { rememberEpisode, searchEpisodes } from "../episodic.ts";
 import { ValidationError } from "../errors.ts";
+import { generateAgentInstructions } from "../frontier/instructions.ts";
 import { clusterExtractionCandidates, extractTranscriptCandidates, reviewExtractionCandidate } from "../extract/candidates.ts";
 import { importTranscript } from "../ingest/transcripts.ts";
 import { listMemoryConflictRecords, listRuleConflictRecords, resolveMemoryConflict, resolveRuleConflict } from "../lifecycle/conflicts.ts";
@@ -125,6 +126,11 @@ const toolSchemas = {
     dryRun: z.boolean().optional(),
     homeDir: z.string().optional().nullable(),
   }),
+  contexttemple_generate_instructions: z.object({
+    project: z.string().optional().nullable(),
+    format: z.enum(["claude-md", "agents-md", "raw-markdown"]).optional(),
+    homeDir: z.string().optional().nullable(),
+  }),
 } as const;
 
 export const contextTempleMcpTools = [
@@ -212,6 +218,11 @@ export const contextTempleMcpTools = [
     name: "contexttemple_run_active_forgetting",
     description: "Archive low-value active memories using usefulness feedback and age thresholds.",
     schema: toolSchemas.contexttemple_run_active_forgetting,
+  },
+  {
+    name: "contexttemple_generate_instructions",
+    description: "Generate agent instructions compatible with CLAUDE.md or AGENTS.md including behavioral rules and tool-calling policy.",
+    schema: toolSchemas.contexttemple_generate_instructions,
   },
 ] as const;
 
@@ -380,6 +391,12 @@ export async function executeContextTempleMcpTool({
           usefulnessThreshold: input.usefulnessThreshold as number | undefined,
           maxAgeDays: input.maxAgeDays as number | undefined,
           dryRun: Boolean(input.dryRun),
+        });
+      case "contexttemple_generate_instructions":
+        return await generateAgentInstructions({
+          temple,
+          project: (input.project as string | null | undefined) ?? null,
+          format: (input.format as "claude-md" | "agents-md" | "raw-markdown" | undefined) ?? "claude-md",
         });
     }
   } finally {

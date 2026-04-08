@@ -1,6 +1,6 @@
 # ContextTemple Architecture
 
-Current release target in this document: `1.1.0`
+Current release target in this document: `1.2.0`
 
 ## Mission
 

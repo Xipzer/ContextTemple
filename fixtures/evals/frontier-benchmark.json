@@ -1,0 +1,106 @@
+{
+  "name": "contexttemple-frontier-v1",
+  "description": "Frontier agent suitability benchmark for MCP tool-calling behavior and agent instructions generation.",
+  "seedTranscripts": [
+    {
+      "path": "fixtures/transcripts/extraction-session.txt",
+      "project": "demo"
+    }
+  ],
+  "toolCallingCases": [
+    {
+      "id": "tool-startup-context",
+      "project": "demo",
+      "description": "Agent retrieves startup context at session start",
+      "toolName": "contexttemple_startup_context",
+      "toolArgs": { "project": "demo", "query": "What auth flow are we using?" },
+      "expectSuccess": true,
+      "expectResultContains": ["Always read the target file", "OAuth device flow"]
+    },
+    {
+      "id": "tool-search-memory",
+      "project": "demo",
+      "description": "Agent searches episodic memory for a prior decision",
+      "toolName": "contexttemple_search_memory",
+      "toolArgs": { "query": "auth device flow", "project": "demo" },
+      "expectSuccess": true,
+      "expectResultContains": ["OAuth device flow"]
+    },
+    {
+      "id": "tool-record-observation",
+      "project": "demo",
+      "description": "Agent records a behavioral correction from the user",
+      "toolName": "contexttemple_record_observation",
+      "toolArgs": { "dimension": "guard", "statement": "Never modify files without reading them first", "project": "demo" },
+      "expectSuccess": true
+    },
+    {
+      "id": "tool-remember-episode",
+      "project": "demo",
+      "description": "Agent stores a durable decision as episodic memory",
+      "toolName": "contexttemple_remember_episode",
+      "toolArgs": { "content": "We decided to use WebSocket for real-time updates instead of SSE.", "project": "demo", "tags": ["websocket", "decision"] },
+      "expectSuccess": true
+    },
+    {
+      "id": "tool-runtime-plan",
+      "project": "demo",
+      "description": "Agent uses the runtime planner to prepare a turn",
+      "toolName": "contexttemple_runtime_plan",
+      "toolArgs": { "project": "demo", "messages": [{ "role": "user", "content": "What auth flow did we choose?" }] },
+      "expectSuccess": true,
+      "expectResultContains": ["retrievedMemories"]
+    },
+    {
+      "id": "tool-runtime-complete",
+      "project": "demo",
+      "description": "Agent writes back after completing a turn",
+      "toolName": "contexttemple_runtime_complete",
+      "toolArgs": { "project": "demo", "messages": [{ "role": "user", "content": "Always run checks before claiming complete." }], "assistantMessage": "Implemented auth and tests passed." },
+      "expectSuccess": true
+    },
+    {
+      "id": "tool-list-rule-conflicts",
+      "project": "demo",
+      "description": "Agent checks for rule conflicts",
+      "toolName": "contexttemple_list_rule_conflicts",
+      "toolArgs": {},
+      "expectSuccess": true
+    },
+    {
+      "id": "tool-active-forgetting",
+      "project": "demo",
+      "description": "Agent runs active forgetting in dry-run mode",
+      "toolName": "contexttemple_run_active_forgetting",
+      "toolArgs": { "project": "demo", "dryRun": true },
+      "expectSuccess": true,
+      "expectResultContains": ["archivedMemoryIds"]
+    }
+  ],
+  "instructionsCases": [
+    {
+      "id": "instructions-claude-md",
+      "project": "demo",
+      "format": "claude-md",
+      "expectContains": [
+        "ContextTemple Memory Layer",
+        "Behavioral Memory",
+        "Tool-Calling Policy",
+        "contexttemple_startup_context",
+        "contexttemple_search_memory",
+        "contexttemple_record_observation",
+        "contexttemple_runtime_complete"
+      ]
+    },
+    {
+      "id": "instructions-agents-md",
+      "project": "demo",
+      "format": "agents-md",
+      "expectContains": [
+        "Agent Memory Instructions",
+        "Tool-Calling Policy",
+        "contexttemple_startup_context"
+      ]
+    }
+  ]
+}

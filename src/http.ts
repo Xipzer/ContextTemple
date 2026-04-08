@@ -6,6 +6,7 @@ import { buildStartupContext } from "./context.ts";
 import type { TempleDatabase } from "./db.ts";
 import { recordRetrievalFeedback, rememberEpisode, searchEpisodes } from "./episodic.ts";
 import { ServerStartError, ValidationError } from "./errors.ts";
+import { generateAgentInstructions } from "./frontier/instructions.ts";
 import { clusterExtractionCandidates, extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns, reviewExtractionCandidate } from "./extract/candidates.ts";
 import { listMemoryConflictRecords, listRuleConflictRecords, resolveMemoryConflict, resolveRuleConflict } from "./lifecycle/conflicts.ts";
 import { runActiveForgetting } from "./maintenance/forget.ts";
@@ -298,6 +299,16 @@ export function createTempleApp({ temple }: { temple: TempleDatabase }) {
     const feedback = await recordRetrievalFeedback({ temple, ...body });
     if (feedback instanceof Error) return errorResponse(c, feedback);
     return c.json(feedback);
+  });
+
+  app.get("/api/frontier/instructions", async (c) => {
+    const instructions = await generateAgentInstructions({
+      temple,
+      project: c.req.query("project") ?? null,
+      format: (c.req.query("format") as "claude-md" | "agents-md" | "raw-markdown" | null) ?? "claude-md",
+    });
+    if (instructions instanceof Error) return errorResponse(c, instructions);
+    return c.json(instructions);
   });
 
   return app;

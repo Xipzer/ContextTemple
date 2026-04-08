@@ -1,6 +1,6 @@
 {
   "name": "contexttemple",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A hybrid behavioral and episodic memory layer for LLM agents.",
   "type": "module",
   "packageManager": "bun@1.2.15",

@@ -14,7 +14,7 @@ ContextTemple is **not approved for first real deployment** until every required
 
 ## Release Note
 
-The `1.1.0` release includes the full required subsystem surface described in this document.
+The `1.2.0` release includes the full required subsystem surface described in this document, plus frontier model suitability (agent instructions, session adapters, and frontier eval benchmarks).
 
 The currently implemented benchmark harness is fixture-backed and deterministic. It is sufficient for a release-grade local-first baseline, but future versions should continue expanding the breadth and difficulty of the benchmark corpus.
 

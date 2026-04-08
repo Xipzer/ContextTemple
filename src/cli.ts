@@ -11,6 +11,7 @@ import { recordObservation } from "./behavioral.ts";
 import { buildStartupContext } from "./context.ts";
 import { openTempleDatabase } from "./db.ts";
 import { rememberEpisode, searchEpisodes } from "./episodic.ts";
+import { defaultFrontierBenchmarkPath, runFrontierBenchmark } from "./evals/frontier.ts";
 import {
   defaultRuntimeBenchmarkPath,
   runBehavioralReplayBenchmark,
@@ -18,6 +19,9 @@ import {
   runLocalModelUpliftBenchmark,
 } from "./evals/replay.ts";
 import { defaultRetrievalBenchmarkPath, runRetrievalBenchmark } from "./evals/retrieval.ts";
+import { generateAgentInstructions } from "./frontier/instructions.ts";
+import { runPostSessionHook, runConsolidationAndInstructionsUpdate } from "./frontier/hooks.ts";
+import { ingestKimakiSession, batchIngestSessionDirectory } from "./frontier/session-adapter.ts";
 import { clusterExtractionCandidates, extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns, reviewExtractionCandidate } from "./extract/candidates.ts";
 import { startTempleServer } from "./http.ts";
 import { renderTranscriptEvent } from "./ingest/events.ts";
@@ -1090,6 +1094,217 @@ cli
       json: options.json,
       human: `ContextTemple listening on http://localhost:${server.server.port}`,
       value: { port: server.server.port },
+    });
+  });
+
+cli
+  .command(
+    "frontier instructions",
+    "Generate agent instructions compatible with CLAUDE.md or AGENTS.md that include behavioral rules, episodic memory, and tool-calling policy.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for the generated instructions."),
+  )
+  .option(
+    "--format [format]",
+    z.enum(["claude-md", "agents-md", "raw-markdown"]).default("claude-md").describe("Output format for the generated agent instructions."),
+  )
+  .option(
+    "--output [path]",
+    z.string().describe("Optional file path to write the generated instructions. If omitted, prints to stdout."),
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const instructions = await generateAgentInstructions({ temple, project: options.project, format: options.format });
+    await temple.close();
+    if (instructions instanceof Error) return printError(instructions);
+
+    if (options.output) {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const absolutePath = path.resolve(options.output);
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, instructions.markdown, "utf8");
+      return printOutput({
+        json: options.json,
+        human: `Wrote ${instructions.format} instructions to ${absolutePath}`,
+        value: instructions,
+      });
+    }
+
+    return printOutput({
+      json: options.json,
+      human: instructions.markdown,
+      value: instructions,
+    });
+  });
+
+cli
+  .command(
+    "frontier ingest-session <sessionId> <path>",
+    "Ingest a Kimaki/OpenCode session transcript, extract candidates, promote to durable memory, and consolidate.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for the ingested session."),
+  )
+  .option(
+    "--no-promote",
+    "Skip automatic promotion of extracted candidates into durable memory.",
+  )
+  .option(
+    "--no-consolidate",
+    "Skip automatic consolidation after ingestion.",
+  )
+  .action(async (sessionId, sessionPath, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await ingestKimakiSession({
+      temple,
+      sessionId,
+      project: options.project,
+      sessionMarkdownPath: sessionPath,
+      autoPromote: !options.noPromote,
+      autoConsolidate: !options.noConsolidate,
+    });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: result.skipped
+        ? `Session ${sessionId} already ingested`
+        : `Ingested session ${sessionId} transcript=${result.transcriptId} extraction=${result.extractionRunId} promotion=${result.promotionRunId}`,
+      value: result,
+    });
+  });
+
+cli
+  .command(
+    "frontier batch-ingest <directory>",
+    "Batch ingest all transcript files from a directory into ContextTemple memory.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for all ingested sessions."),
+  )
+  .action(async (directory, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const results = await batchIngestSessionDirectory({ temple, directory, project: options.project });
+    await temple.close();
+    if (results instanceof Error) return printError(results);
+
+    const ingested = results.filter((r) => !r.skipped).length;
+    const skipped = results.filter((r) => r.skipped).length;
+    return printOutput({
+      json: options.json,
+      human: `Batch ingested ${ingested} sessions, skipped ${skipped} duplicates`,
+      value: results,
+    });
+  });
+
+cli
+  .command(
+    "frontier post-session <sessionId> <path>",
+    "Run the full post-session hook: ingest transcript, consolidate, and optionally regenerate agent instructions.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for the post-session hook."),
+  )
+  .option(
+    "--instructions-output [path]",
+    z.string().describe("Optional file path to write updated agent instructions after consolidation."),
+  )
+  .option(
+    "--instructions-format [format]",
+    z.enum(["claude-md", "agents-md", "raw-markdown"]).default("claude-md").describe("Format for the generated instructions file."),
+  )
+  .action(async (sessionId, sessionPath, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await runPostSessionHook({
+      temple,
+      sessionId,
+      sessionMarkdownPath: sessionPath,
+      project: options.project,
+      instructionsOutputPath: options.instructionsOutput,
+      instructionsFormat: options.instructionsFormat,
+    });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `session: ${result.sessionId}`,
+        `ingested: ${result.ingested}`,
+        `consolidated: ${result.consolidated}`,
+        `instructions updated: ${result.instructionsUpdated}`,
+        result.instructionsPath ? `instructions path: ${result.instructionsPath}` : "",
+      ].filter(Boolean).join("\n"),
+      value: result,
+    });
+  });
+
+cli
+  .command(
+    "frontier update-instructions <output>",
+    "Consolidate memory and regenerate the agent instructions file without ingesting a new session.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for consolidation and instructions generation."),
+  )
+  .option(
+    "--format [format]",
+    z.enum(["claude-md", "agents-md", "raw-markdown"]).default("claude-md").describe("Output format for the regenerated instructions file."),
+  )
+  .action(async (output, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await runConsolidationAndInstructionsUpdate({
+      temple,
+      project: options.project,
+      instructionsOutputPath: output,
+      instructionsFormat: options.format,
+    });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: `Updated instructions at ${result.instructionsPath} (${result.ruleCount} rules, ${result.memoryCount} memories)`,
+      value: result,
+    });
+  });
+
+cli
+  .command(
+    "eval frontier [dataset]",
+    "Run the frontier agent suitability benchmark for MCP tool-calling behavior and agent instructions generation.",
+  )
+  .action(async (dataset, options) => {
+    const report = await runFrontierBenchmark({ datasetPath: dataset ?? defaultFrontierBenchmarkPath() });
+    if (report instanceof Error) return printError(report);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `dataset: ${report.datasetName}`,
+        `tool-calling score: ${report.toolCallingScore}`,
+        `instructions score: ${report.instructionsScore}`,
+        `composite score: ${report.compositeScore}`,
+      ].join("\n"),
+      value: report,
     });
   });
 
