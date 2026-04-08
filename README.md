@@ -100,6 +100,9 @@ Current committed eval snapshot from the fixture-backed harness:
 - behavioral replay improvement: `1`
 - first-response calibration improvement: `1`
 - composite local-model uplift: `0.7342`
+- frontier suitability composite: `1`
+
+Full stored benchmark history lives in `BENCHMARKS.md`.
 
 ## Quick start
 
@@ -230,6 +233,8 @@ bun run src/cli.ts serve --port 4000
 See `docs/architecture.md` for the full design, including the shipped runtime, lifecycle, evaluation, bridge, MCP, review, and forgetting layers.
 
 For the strict deployment gate and implementation order toward a real `v1.0`, see `docs/v1-readiness.md`.
+
+For the stored benchmark history and release snapshots, see `BENCHMARKS.md`.
 
 ## Roadmap
 

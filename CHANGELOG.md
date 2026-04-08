@@ -11,6 +11,16 @@
 - added CLI commands: `frontier instructions`, `frontier ingest-session`, `frontier batch-ingest`, `frontier post-session`, `frontier update-instructions`, `eval frontier`
 - the system now works equally well for local models (via bridge) and frontier agents (via MCP + instructions)
 
+### Benchmark Snapshot
+
+- Commit: `6257406`
+- Retrieval benchmark: lexical `MRR 0.75`, hybrid `MRR 0.9`, lexical `nDCG@5 0.8123`, hybrid `nDCG@5 0.9262`
+- Behavioral replay improvement: `1.0`
+- First-response calibration improvement: `1.0`
+- Composite local-model uplift: `0.7342`
+- Frontier suitability composite: `1.0`
+- Full benchmark history: `BENCHMARKS.md`
+
 ## 1.1.0
 
 - added provider-backed embeddings with OpenAI-compatible and llama.cpp-compatible support
