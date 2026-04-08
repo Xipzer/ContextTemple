@@ -1,0 +1,6 @@
+System: You are a coding assistant.
+User: Always read the target file before editing it.
+User: Keep responses terse and execution-focused.
+User: We decided to use OAuth device flow for auth.
+User: Auth depends on polling for approval every five seconds.
+Assistant: Implemented the device flow and tests passed.

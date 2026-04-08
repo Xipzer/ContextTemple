@@ -1,5 +1,7 @@
 # ContextTemple Architecture
 
+Current release target in this document: `1.0.0`
+
 ## Mission
 
 Create a memory layer for existing LLM agents that improves perceived intelligence, not just retrieval depth.
@@ -121,18 +123,61 @@ Fields:
 
 ## Retrieval strategy
 
-Current retrieval is deterministic and local-first.
+Current retrieval is deterministic and local-first, but now uses a hybrid ranking path.
 
 Score components:
 
-- keyword overlap
-- summary overlap
+- lexical overlap
+- semantic vector similarity
 - tag overlap
 - phrase match bonus
 - recency bonus
 - salience bonus
+- reranking over the top candidate set
 
-This keeps the first implementation usable without needing embeddings or a paid API.
+The current semantic layer uses local hashed vectors and semantic expansion rules so the retrieval path remains offline-friendly while already improving over purely lexical search.
+
+## Current evaluation surface
+
+ContextTemple now includes a committed retrieval benchmark dataset and scoring script.
+
+Current capabilities:
+
+- lexical-only baseline evaluation
+- hybrid retrieval evaluation
+- `Recall@K`, `MRR`, and `nDCG@K` reporting
+- reproducible fixture-backed benchmark runs from the CLI
+
+## Current runtime surface
+
+ContextTemple now includes a runtime orchestration layer.
+
+Current capabilities:
+
+- session bootstrap planning
+- retrieval policy for live turns
+- runtime writeback for observations and outcomes
+- llama.cpp bridge using an OpenAI-compatible chat endpoint
+
+## Current lifecycle surface
+
+ContextTemple now tracks lifecycle conflicts instead of assuming every stored rule and memory can stay active forever.
+
+Current capabilities:
+
+- rule conflict detection and conflict records
+- reactivation of rules when open conflicts clear
+- memory supersession when newer same-source statements replace older ones
+- memory conflict detection for incompatible active memories
+
+## Current safety surface
+
+Current capabilities:
+
+- SQLite snapshot export
+- SQLite snapshot import
+- project-scoped purge
+- provenance on transcripts, candidates, promotions, rules, and memories
 
 ## Consolidation strategy
 
@@ -166,20 +211,51 @@ This is the session-start payload for an agent.
 
 - Bun CLI
 - Hono HTTP API
+- MCP server over stdio
+- llama.cpp bridge over OpenAI-compatible chat completions
+
+## Current ingestion surface
+
+ContextTemple now supports canonical transcript ingestion as the first replayable substrate for future extraction.
+
+Current capabilities:
+
+- transcript parsing with auto-detection
+- persisted transcript source records
+- persisted canonical transcript events
+- idempotent re-ingestion by checksum and project scope
+- CLI preview and event inspection
+- persisted extraction runs and extraction candidates
+- heuristic extraction of decisions, observations, facts, and outcomes
+- persisted promotion runs
+- promotion of extracted observations into behavioral memory
+- promotion of extracted decisions, facts, and outcomes into episodic memory
 
 ## Planned next layers
+
+### Smarter promotion policy
+
+Refine promotion so extracted candidates become higher-quality durable memory through:
+
+- better duplicate detection
+- contradiction-aware state updates
+- candidate conflict resolution
+- policy-specific promotion thresholds
+
+### Higher-quality embedding providers
+
+Replace the current hashed semantic vectors with stronger learned embedding providers while preserving the same hybrid retrieval contract.
+
+### Broader evaluation harness
+
+Add benchmark families beyond retrieval:
+
+- memory drift
+- operator review flows
 
 ### Embedding-backed consolidation
 
 Use semantic clustering to merge observations that are equivalent but lexically different.
-
-### MCP server
-
-Expose search, wake, feedback, and observation recording as direct agent tools.
-
-### Automatic transcript ingestion
-
-Turn agent transcripts into both episodic memories and behavioral observations.
 
 ### Memory quality loop
 
@@ -209,6 +285,10 @@ src/
   cli.ts            Bun CLI
   db.ts             database bootstrap and access
   schema.ts         Drizzle schema
+  ingest/
+    normalize.ts    transcript parser registry and auto-detection
+    transcripts.ts  transcript persistence and replay access
+    events.ts       canonical event rendering and bounds
 ```
 
 ## Implementation note

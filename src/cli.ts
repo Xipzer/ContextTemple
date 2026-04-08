@@ -6,11 +6,28 @@ import { createRequire } from "node:module";
 import { goke } from "goke";
 import { z } from "zod";
 
+import { startLlamaCppBridgeServer } from "./adapters/llamacpp.ts";
 import { recordObservation } from "./behavioral.ts";
 import { buildStartupContext } from "./context.ts";
 import { openTempleDatabase } from "./db.ts";
 import { rememberEpisode, searchEpisodes } from "./episodic.ts";
+import {
+  defaultRuntimeBenchmarkPath,
+  runBehavioralReplayBenchmark,
+  runFirstResponseCalibrationBenchmark,
+  runLocalModelUpliftBenchmark,
+} from "./evals/replay.ts";
+import { defaultRetrievalBenchmarkPath, runRetrievalBenchmark } from "./evals/retrieval.ts";
+import { extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns } from "./extract/candidates.ts";
 import { startTempleServer } from "./http.ts";
+import { renderTranscriptEvent } from "./ingest/events.ts";
+import { importTranscript, listTranscriptEvents, listTranscripts, parseTranscriptFile } from "./ingest/transcripts.ts";
+import { transcriptRequestedFormats } from "./ingest/types.ts";
+import { listMemoryConflictRecords, listRuleConflictRecords } from "./lifecycle/conflicts.ts";
+import { exportTempleSnapshot, importTempleSnapshot, purgeProjectData } from "./maintenance/snapshot.ts";
+import { startContextTempleMcpServer } from "./mcp/server.ts";
+import { listPromotionRuns, promoteExtractionRun } from "./promote/candidates.ts";
+import { completeRuntimeTurn, prepareRuntimeTurn } from "./runtime/orchestrator.ts";
 import { getTempleStatus } from "./status.ts";
 import { behavioralDimensions } from "./types.ts";
 import { runConsolidationCycle } from "./consolidation.ts";
@@ -50,6 +67,573 @@ cli
       json: options.json,
       human: `Initialized ContextTemple at ${temple.paths.homeDir}`,
       value: { homeDir: temple.paths.homeDir, dbPath: temple.paths.dbPath, status },
+    });
+  });
+
+cli
+  .command(
+    "transcript ingest <path>",
+    "Normalize a transcript into ContextTemple's canonical event schema and optionally persist it for replay and future extraction.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope attached to the imported transcript."),
+  )
+  .option(
+    "--label [label]",
+    z.string().describe("Optional friendly source label stored alongside the transcript path."),
+  )
+  .option(
+    "--format [format]",
+    z.enum(transcriptRequestedFormats).default("auto").describe("Transcript format to parse. Use auto to let ContextTemple detect the parser."),
+  )
+  .option(
+    "--preview",
+    "Parse the transcript and print canonical events without writing anything to the database.",
+  )
+  .option(
+    "--events [events]",
+    z.int().default(12).describe("Maximum number of canonical events to print in preview mode."),
+  )
+  .action(async (path, options) => {
+    if (options.preview) {
+      const parsed = await parseTranscriptFile({ filePath: path, format: options.format });
+      if (parsed instanceof Error) return printError(parsed);
+
+      const previewEvents = parsed.events.slice(0, options.events).map(renderTranscriptEvent).join("\n");
+      return printOutput({
+        json: options.json,
+        human: [
+          `format: ${parsed.format}`,
+          `checksum: ${parsed.checksum}`,
+          `events: ${parsed.events.length}`,
+          parsed.warnings.length > 0 ? `warnings: ${parsed.warnings.length}` : "warnings: 0",
+          "",
+          previewEvents || "No canonical events",
+        ].join("\n"),
+        value: parsed,
+      });
+    }
+
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const imported = await importTranscript({
+      temple,
+      filePath: path,
+      project: options.project,
+      sourceLabel: options.label,
+      format: options.format,
+    });
+    await temple.close();
+    if (imported instanceof Error) return printError(imported);
+
+    return printOutput({
+      json: options.json,
+      human: imported.duplicate
+        ? `Transcript already imported as ${imported.transcript.id}`
+        : `Imported transcript ${imported.transcript.id} with ${imported.eventsInserted} canonical events`,
+      value: imported,
+    });
+  });
+
+cli
+  .command(
+    "transcript list",
+    "List recently imported transcripts so you can inspect and replay canonical event sources.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for narrowing the transcript list."),
+  )
+  .option(
+    "--limit [limit]",
+    z.int().default(20).describe("Maximum number of transcript sources to return."),
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const transcripts = await listTranscripts({ temple, project: options.project, limit: options.limit });
+    await temple.close();
+    if (transcripts instanceof Error) return printError(transcripts);
+
+    return printOutput({
+      json: options.json,
+      human:
+        transcripts
+          .map((transcript) => `${transcript.id} ${transcript.format} events=${transcript.eventCount} path=${transcript.sourcePath}`)
+          .join("\n") || "No imported transcripts",
+      value: transcripts,
+    });
+  });
+
+cli
+  .command(
+    "transcript events <transcriptId>",
+    "Show canonical events for an imported transcript in event order.",
+  )
+  .option(
+    "--limit [limit]",
+    z.int().default(100).describe("Maximum number of canonical events to print."),
+  )
+  .action(async (transcriptId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const events = await listTranscriptEvents({ temple, transcriptId, limit: options.limit });
+    await temple.close();
+    if (events instanceof Error) return printError(events);
+
+    return printOutput({
+      json: options.json,
+      human: events.map(renderTranscriptEvent).join("\n") || "No canonical events",
+      value: events,
+    });
+  });
+
+cli
+  .command(
+    "extract transcript <transcriptId>",
+    "Run the heuristic extraction engine against a persisted canonical transcript and store structured candidates.",
+  )
+  .action(async (transcriptId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await extractTranscriptCandidates({ temple, transcriptId });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        result.duplicate
+          ? `Extraction already exists for transcript ${transcriptId}`
+          : `Created extraction run ${result.run.id} with ${result.candidates.length} candidates`,
+        ...result.candidates.map(
+          (candidate) =>
+            `- ${candidate.candidateType}${candidate.behavioralDimension ? `/${candidate.behavioralDimension}` : ""}: ${candidate.statement}`,
+        ),
+      ].join("\n"),
+      value: result,
+    });
+  });
+
+cli
+  .command(
+    "extract runs",
+    "List persisted extraction runs so you can inspect replay state and deduplicate reruns.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for narrowing extraction runs."),
+  )
+  .option(
+    "--transcript [transcriptId]",
+    z.string().describe("Optional transcript id for narrowing extraction runs."),
+  )
+  .option(
+    "--limit [limit]",
+    z.int().default(20).describe("Maximum number of extraction runs to return."),
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const runs = await listExtractionRuns({
+      temple,
+      project: options.project,
+      transcriptId: options.transcript,
+      limit: options.limit,
+    });
+    await temple.close();
+    if (runs instanceof Error) return printError(runs);
+
+    return printOutput({
+      json: options.json,
+      human:
+        runs
+          .map(
+            (run) =>
+              `${run.id} transcript=${run.transcriptId} engine=${run.engineVersion} candidates=${run.candidateCount}`,
+          )
+          .join("\n") || "No extraction runs",
+      value: runs,
+    });
+  });
+
+cli
+  .command(
+    "extract candidates <transcriptId>",
+    "List stored extraction candidates for a transcript.",
+  )
+  .action(async (transcriptId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const candidates = await listExtractionCandidates({ temple, transcriptId });
+    await temple.close();
+    if (candidates instanceof Error) return printError(candidates);
+
+    return printOutput({
+      json: options.json,
+      human:
+        candidates
+          .map(
+            (candidate) =>
+              `${candidate.candidateType}${candidate.behavioralDimension ? `/${candidate.behavioralDimension}` : ""} ${candidate.statement}`,
+          )
+          .join("\n") || "No extraction candidates",
+      value: candidates,
+    });
+  });
+
+cli
+  .command(
+    "promote extraction <extractionRunId>",
+    "Promote extracted candidates into durable observations and episodic memories using the current promotion policy.",
+  )
+  .action(async (extractionRunId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await promoteExtractionRun({ temple, extractionRunId });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        result.duplicate
+          ? `Promotion already exists for extraction run ${extractionRunId}`
+          : `Created promotion run ${result.run.id}`,
+        `observations: ${result.promotedObservationIds.length}`,
+        `episodic memories: ${result.promotedMemoryIds.length}`,
+      ].join("\n"),
+      value: result,
+    });
+  });
+
+cli
+  .command(
+    "promote runs",
+    "List promotion runs that moved extracted candidates into durable memory.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for narrowing promotion runs."),
+  )
+  .option(
+    "--extraction [extractionRunId]",
+    z.string().describe("Optional extraction run id for narrowing promotion runs."),
+  )
+  .option(
+    "--limit [limit]",
+    z.int().default(20).describe("Maximum number of promotion runs to return."),
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const runs = await listPromotionRuns({
+      temple,
+      project: options.project,
+      extractionRunId: options.extraction,
+      limit: options.limit,
+    });
+    await temple.close();
+    if (runs instanceof Error) return printError(runs);
+
+    return printOutput({
+      json: options.json,
+      human:
+        runs
+          .map(
+            (run) =>
+              `${run.id} extraction=${run.extractionRunId} observations=${run.promotedObservationIds.length} memories=${run.promotedMemoryIds.length}`,
+          )
+          .join("\n") || "No promotion runs",
+      value: runs,
+    });
+  });
+
+cli
+  .command(
+    "eval retrieval [dataset]",
+    "Run the committed retrieval benchmark and compare lexical-only retrieval against the current hybrid retrieval stack.",
+  )
+  .option(
+    "--k [k]",
+    z.int().default(5).describe("Top-K cutoff used for Recall@K and nDCG@K."),
+  )
+  .action(async (dataset, options) => {
+    const report = await runRetrievalBenchmark({
+      datasetPath: dataset ?? defaultRetrievalBenchmarkPath(),
+      topK: options.k,
+    });
+    if (report instanceof Error) return printError(report);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `dataset: ${report.datasetName}`,
+        `queries: ${report.queryCount}`,
+        `topK: ${report.topK}`,
+        "",
+        `lexical recall@${report.topK}: ${report.lexical.recallAtK}`,
+        `lexical mrr: ${report.lexical.mrr}`,
+        `lexical ndcg@${report.topK}: ${report.lexical.ndcgAtK}`,
+        "",
+        `hybrid recall@${report.topK}: ${report.hybrid.recallAtK}`,
+        `hybrid mrr: ${report.hybrid.mrr}`,
+        `hybrid ndcg@${report.topK}: ${report.hybrid.ndcgAtK}`,
+        "",
+        `uplift recall@${report.topK}: ${report.uplift.recallAtK}`,
+        `uplift mrr: ${report.uplift.mrr}`,
+        `uplift ndcg@${report.topK}: ${report.uplift.ndcgAtK}`,
+      ].join("\n"),
+      value: report,
+    });
+  });
+
+cli
+  .command(
+    "eval replay [dataset]",
+    "Run the behavioral replay benchmark against the runtime orchestrator using seeded transcripts.",
+  )
+  .action(async (dataset, options) => {
+    const report = await runBehavioralReplayBenchmark({ datasetPath: dataset ?? defaultRuntimeBenchmarkPath() });
+    if (report instanceof Error) return printError(report);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `dataset: ${report.datasetName}`,
+        `no-memory score: ${report.noMemory.score}`,
+        `full-system score: ${report.fullSystem.score}`,
+        `improvement: ${report.improvement}`,
+      ].join("\n"),
+      value: report,
+    });
+  });
+
+cli
+  .command(
+    "eval calibration [dataset]",
+    "Run the first-response calibration benchmark comparing startup-only context against the full runtime orchestrator.",
+  )
+  .action(async (dataset, options) => {
+    const report = await runFirstResponseCalibrationBenchmark({ datasetPath: dataset ?? defaultRuntimeBenchmarkPath() });
+    if (report instanceof Error) return printError(report);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `dataset: ${report.datasetName}`,
+        `startup-only score: ${report.startupOnly.score}`,
+        `full-system score: ${report.fullSystem.score}`,
+        `improvement: ${report.improvement}`,
+      ].join("\n"),
+      value: report,
+    });
+  });
+
+cli
+  .command(
+    "eval uplift [runtimeDataset]",
+    "Run the composite local-model uplift benchmark using behavioral replay, first-response calibration, and retrieval uplift.",
+  )
+  .option(
+    "--retrieval-dataset [dataset]",
+    z.string().describe("Optional retrieval benchmark dataset path. Defaults to the committed retrieval benchmark."),
+  )
+  .action(async (runtimeDataset, options) => {
+    const report = await runLocalModelUpliftBenchmark({
+      runtimeDatasetPath: runtimeDataset ?? defaultRuntimeBenchmarkPath(),
+      retrievalDatasetPath: options.retrievalDataset ?? defaultRetrievalBenchmarkPath(),
+    });
+    if (report instanceof Error) return printError(report);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `behavioral replay improvement: ${report.behavioralReplayImprovement}`,
+        `first-response improvement: ${report.firstResponseImprovement}`,
+        `retrieval ndcg improvement: ${report.retrievalNdcgImprovement}`,
+        `composite improvement: ${report.compositeImprovement}`,
+      ].join("\n"),
+      value: report,
+    });
+  });
+
+cli
+  .command(
+    "runtime plan <message>",
+    "Preview the runtime orchestrator plan for a user message, including retrieval decisions and synthesized system messages.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for the runtime plan."),
+  )
+  .option(
+    "--max-prompt [tokens]",
+    z.int().default(4096).describe("Approximate prompt budget used for runtime planning."),
+  )
+  .action(async (message, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const plan = await prepareRuntimeTurn({
+      temple,
+      project: options.project,
+      maxPromptTokens: options.maxPrompt,
+      messages: [{ role: "user", content: message }],
+    });
+    await temple.close();
+    if (plan instanceof Error) return printError(plan);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `bootstrap: ${plan.shouldBootstrap}`,
+        `retrieve: ${plan.shouldRetrieve}`,
+        `retrieval query: ${plan.retrievalQuery ?? "none"}`,
+        `rules: ${plan.rules.length}`,
+        `retrieved memories: ${plan.retrievedMemories.length}`,
+        "",
+        ...plan.systemMessages,
+      ].join("\n"),
+      value: plan,
+    });
+  });
+
+cli
+  .command(
+    "runtime complete <message>",
+    "Run runtime writeback for a completed assistant turn using the latest user message and assistant response.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for the writeback."),
+  )
+  .option(
+    "--assistant <assistant>",
+    z.string().describe("Assistant response content for the completed turn."),
+  )
+  .option(
+    "--session [sessionId]",
+    z.string().describe("Optional runtime session identifier stored in writeback sources."),
+  )
+  .action(async (message, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await completeRuntimeTurn({
+      temple,
+      project: options.project,
+      sessionId: options.session,
+      messages: [{ role: "user", content: message }],
+      assistantMessage: options.assistant,
+    });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: `observations: ${result.observationsAdded.length}\nmemories: ${result.memoriesAdded.length}`,
+      value: result,
+    });
+  });
+
+cli
+  .command("conflicts rules", "List detected rule conflicts that currently block rules from remaining active.")
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const conflicts = await listRuleConflictRecords({ temple });
+    await temple.close();
+    if (conflicts instanceof Error) return printError(conflicts);
+
+    return printOutput({
+      json: options.json,
+      human:
+        conflicts
+          .map((conflict) => `${conflict.status} ${conflict.leftRuleId} <-> ${conflict.rightRuleId} reason=${conflict.reason}`)
+          .join("\n") || "No rule conflicts",
+      value: conflicts,
+    });
+  });
+
+cli
+  .command("conflicts memories", "List detected episodic memory conflicts and supersession issues.")
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const conflicts = await listMemoryConflictRecords({ temple });
+    await temple.close();
+    if (conflicts instanceof Error) return printError(conflicts);
+
+    return printOutput({
+      json: options.json,
+      human:
+        conflicts
+          .map((conflict) => `${conflict.status} ${conflict.leftMemoryId} <-> ${conflict.rightMemoryId} reason=${conflict.reason}`)
+          .join("\n") || "No memory conflicts",
+      value: conflicts,
+    });
+  });
+
+cli
+  .command("snapshot export <output>", "Copy the local SQLite store to a backup path for export and recovery.")
+  .action(async (output, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await exportTempleSnapshot({ temple, outputPath: output });
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: `Exported ContextTemple snapshot to ${result.outputPath}`,
+      value: result,
+    });
+  });
+
+cli
+  .command("snapshot import <input>", "Restore the local SQLite store from a snapshot file.")
+  .action(async (input, options) => {
+    const result = await importTempleSnapshot({ homeDir: options.home, snapshotPath: input });
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: `Imported ContextTemple snapshot into ${result.dbPath}`,
+      value: result,
+    });
+  });
+
+cli
+  .command("snapshot purge-project <project>", "Delete project-scoped memory, transcripts, and derived artifacts for one project.")
+  .action(async (project, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await purgeProjectData({ temple, project });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: [
+        `purged observations: ${result.observations}`,
+        `purged behavioral rules: ${result.behavioralRules}`,
+        `purged episodic memories: ${result.episodicMemories}`,
+        `purged transcripts: ${result.transcripts}`,
+      ].join("\n"),
+      value: result,
     });
   });
 
@@ -260,9 +844,68 @@ cli
         `active rules: ${status.activeRules}`,
         `episodic memories: ${status.episodicMemories}`,
         `retrieval events: ${status.retrievalEvents}`,
+        `transcripts: ${status.transcripts}`,
+        `transcript events: ${status.transcriptEvents}`,
+        `extraction runs: ${status.extractionRuns}`,
+        `extracted candidates: ${status.extractedCandidates}`,
+        `promotion runs: ${status.promotionRuns}`,
+        `rule conflicts: ${status.ruleConflicts}`,
+        `memory conflicts: ${status.memoryConflicts}`,
       ].join("\n"),
       value: status,
     });
+  });
+
+cli
+  .command(
+    "bridge llamacpp",
+    "Start an OpenAI-compatible proxy in front of llama.cpp that injects ContextTemple runtime planning and writeback.",
+  )
+  .option(
+    "--llama-url [url]",
+    z.string().default("http://127.0.0.1:8080").describe("Base URL for the upstream llama.cpp server exposing /v1/chat/completions."),
+  )
+  .option(
+    "--port [port]",
+    z.int().default(4001).describe("Port to listen on for the ContextTemple llama.cpp bridge."),
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional default project scope applied when the client does not send x-contexttemple-project."),
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const server = startLlamaCppBridgeServer({
+      temple,
+      llamaCppUrl: options.llamaUrl,
+      port: options.port,
+      defaultProject: options.project,
+    });
+    if (server instanceof Error) {
+      await temple.close();
+      return printError(server);
+    }
+
+    process.on("SIGINT", async () => {
+      server.server.stop(true);
+      await temple.close();
+      process.exit(0);
+    });
+
+    return printOutput({
+      json: options.json,
+      human: `ContextTemple llama.cpp bridge listening on http://localhost:${server.server.port}`,
+      value: { port: server.server.port, llamaCppUrl: options.llamaUrl },
+    });
+  });
+
+cli
+  .command("mcp", "Start the ContextTemple MCP server over stdio for MCP-compatible clients.")
+  .action(async () => {
+    const server = await startContextTempleMcpServer().catch((error) => error as Error);
+    if (server instanceof Error) return printError(server);
   });
 
 cli

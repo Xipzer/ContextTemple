@@ -4,9 +4,13 @@ import { desc, eq } from "drizzle-orm";
 
 import type { TempleDatabase } from "./db.ts";
 import { DatabaseQueryError, ValidationError } from "./errors.ts";
+import { applyMemoryLifecycle } from "./lifecycle/conflicts.ts";
 import { episodicMemories, retrievalEvents } from "./schema.ts";
-import { extractKeywords, normalizeText, overlapRatio, summarizeContent, tokenize } from "./text.ts";
-import { clamp, parseJsonStringArray, scoreRecency, stringifyJson } from "./utils.ts";
+import { extractKeywords, summarizeContent } from "./text.ts";
+import { buildSemanticIndex } from "./retrieval/semantic.ts";
+import { rankHybridMemories, type IndexedMemory } from "./retrieval/hybrid.ts";
+import { rerankHybridMemories } from "./retrieval/rerank.ts";
+import { clamp, parseJsonNumberArray, parseJsonStringArray, stringifyJson } from "./utils.ts";
 import type { EpisodicContextSnapshot, MemoryInput, MemorySearchResult, StoredMemory } from "./types.ts";
 
 function mapMemory(row: typeof episodicMemories.$inferSelect): StoredMemory {
@@ -18,11 +22,39 @@ function mapMemory(row: typeof episodicMemories.$inferSelect): StoredMemory {
     summary: row.summary,
     tags: parseJsonStringArray({ value: row.tagsJson, context: `memory:${row.id}:tags` }),
     keywords: parseJsonStringArray({ value: row.keywordsJson, context: `memory:${row.id}:keywords` }),
+    semanticTerms: parseJsonStringArray({ value: row.semanticTermsJson, context: `memory:${row.id}:semantic_terms` }),
+    status: row.status,
+    supersededByMemoryId: row.supersededByMemoryId,
     salience: row.salience,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastAccessedAt: row.lastAccessedAt,
     accessCount: row.accessCount,
+  };
+}
+
+function mapIndexedMemory(row: typeof episodicMemories.$inferSelect): IndexedMemory {
+  const semanticTerms = parseJsonStringArray({ value: row.semanticTermsJson, context: `memory:${row.id}:semantic_terms` });
+  const embedding = parseJsonNumberArray({ value: row.embeddingJson, context: `memory:${row.id}:embedding` });
+
+  if (semanticTerms.length > 0 && embedding.length > 0) {
+    return {
+      ...mapMemory(row),
+      semanticTerms,
+      embedding,
+    };
+  }
+
+  const rebuilt = buildSemanticIndex({
+    content: row.content,
+    summary: row.summary,
+    tags: parseJsonStringArray({ value: row.tagsJson, context: `memory:${row.id}:tags` }),
+  });
+
+  return {
+    ...mapMemory(row),
+    semanticTerms: rebuilt.semanticTerms,
+    embedding: rebuilt.embedding,
   };
 }
 
@@ -39,21 +71,46 @@ export async function rememberEpisode({
   }
 
   const tags = [...new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))];
+  const summary = summarizeContent(content);
+  const semanticIndex = buildSemanticIndex({ content, summary, tags });
   const keywords = extractKeywords({ content, tags });
+  const project = input.project?.trim() || null;
+  const source = input.source?.trim() || null;
+
+  const existingRows = await (source
+    ? episodicMemoryQuery({ temple, project, source })
+    : episodicMemoryQuery({ temple, project })).catch(
+    (cause) => new DatabaseQueryError({ operation: "fetch existing episodic memories", cause }),
+  );
+  if (existingRows instanceof Error) return existingRows;
+
+  const exactExisting = existingRows.find(
+    (row) => row.status === "active" && row.source === source && normalizeEpisode(row.content) === normalizeEpisode(content),
+  );
+  if (exactExisting) return mapMemory(exactExisting);
+
   const tagsJson = stringifyJson({ value: tags, context: "episodic tags" });
   if (tagsJson instanceof Error) return tagsJson;
   const keywordsJson = stringifyJson({ value: keywords, context: "episodic keywords" });
   if (keywordsJson instanceof Error) return keywordsJson;
+  const semanticTermsJson = stringifyJson({ value: semanticIndex.semanticTerms, context: "episodic semantic terms" });
+  if (semanticTermsJson instanceof Error) return semanticTermsJson;
+  const embeddingJson = stringifyJson({ value: semanticIndex.embedding, context: "episodic embedding" });
+  if (embeddingJson instanceof Error) return embeddingJson;
 
   const now = new Date();
   const record = {
     id: randomUUID(),
-    project: input.project?.trim() || null,
-    source: input.source?.trim() || null,
+    project,
+    source,
     content,
-    summary: summarizeContent(content),
+    summary,
     tagsJson,
     keywordsJson,
+    semanticTermsJson,
+    embeddingJson,
+    status: "active" as const,
+    supersededByMemoryId: null,
     salience: clamp(input.salience ?? 5, 1, 10),
     createdAt: now,
     updatedAt: now,
@@ -65,6 +122,16 @@ export async function rememberEpisode({
     (cause) => new DatabaseQueryError({ operation: "insert episodic memory", cause }),
   );
   if (insertResult instanceof Error) return insertResult;
+
+  const lifecycle = await applyMemoryLifecycle({
+    temple,
+    insertedMemory: {
+      ...mapIndexedMemory(record),
+      embedding: semanticIndex.embedding,
+    },
+    candidateMemories: existingRows.filter((row) => row.status === "active").map(mapIndexedMemory),
+  });
+  if (lifecycle instanceof Error) return lifecycle;
 
   return mapMemory(record);
 }
@@ -85,23 +152,14 @@ export async function searchEpisodes({
     return new ValidationError({ field: "query", reason: "must not be empty" });
   }
 
-  const memories = await fetchMemories({ temple, project });
+  const memories = await fetchIndexedMemories({ temple, project });
   if (memories instanceof Error) return memories;
 
-  const queryTokens = tokenize(trimmedQuery);
-  const normalizedQuery = normalizeText(trimmedQuery);
-  const scored = memories
-    .map((memory) => ({
-      memory,
-      score: scoreMemory({ memory, queryTokens, normalizedQuery }),
-    }))
-    .filter((result) => result.score > 0)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit);
-
+  const ranked = rankHybridMemories({ memories, query: trimmedQuery });
+  const reranked = rerankHybridMemories({ ranked, query: trimmedQuery }).slice(0, limit);
   const results: MemorySearchResult[] = [];
 
-  for (const result of scored) {
+  for (const result of reranked) {
     const retrievalId = randomUUID();
     const insertEventResult = await temple.db
       .insert(retrievalEvents)
@@ -109,7 +167,7 @@ export async function searchEpisodes({
         id: retrievalId,
         query: trimmedQuery,
         memoryId: result.memory.id,
-        score: result.score,
+        score: result.scoreBreakdown.total,
         accepted: null,
         createdAt: new Date(),
       })
@@ -117,25 +175,49 @@ export async function searchEpisodes({
     if (insertEventResult instanceof Error) return insertEventResult;
 
     const accessResult = await temple.db
-      .update(episodicMemories)
-      .set({
-        accessCount: result.memory.accessCount + 1,
-        lastAccessedAt: new Date(),
+    .update(episodicMemories)
+    .set({
+      accessCount: result.memory.accessCount + 1,
+      lastAccessedAt: new Date(),
       })
       .where(eq(episodicMemories.id, result.memory.id))
       .catch((cause) => new DatabaseQueryError({ operation: "update episodic access metadata", cause }));
     if (accessResult instanceof Error) return accessResult;
 
     results.push({
-      ...result.memory,
+      ...toPublicMemory(result.memory),
       accessCount: result.memory.accessCount + 1,
       lastAccessedAt: new Date(),
-      score: Number(result.score.toFixed(4)),
+      score: Number(result.scoreBreakdown.total.toFixed(4)),
       retrievalId,
+      scoreBreakdown: {
+        ...result.scoreBreakdown,
+        total: Number(result.scoreBreakdown.total.toFixed(4)),
+      },
     });
   }
 
   return results;
+}
+
+function toPublicMemory(memory: IndexedMemory): StoredMemory {
+  return {
+    id: memory.id,
+    project: memory.project,
+    source: memory.source,
+    content: memory.content,
+    summary: memory.summary,
+    tags: memory.tags,
+    keywords: memory.keywords,
+    semanticTerms: memory.semanticTerms,
+    status: memory.status,
+    supersededByMemoryId: memory.supersededByMemoryId,
+    salience: memory.salience,
+    createdAt: memory.createdAt,
+    updatedAt: memory.updatedAt,
+    lastAccessedAt: memory.lastAccessedAt,
+    accessCount: memory.accessCount,
+  };
 }
 
 export async function recordRetrievalFeedback({
@@ -155,7 +237,6 @@ export async function recordRetrievalFeedback({
   if (eventRows instanceof Error) return eventRows;
 
   const [event] = eventRows;
-
   if (!event) {
     return new ValidationError({ field: "retrievalId", reason: "was not found" });
   }
@@ -168,7 +249,6 @@ export async function recordRetrievalFeedback({
   if (memoryRows instanceof Error) return memoryRows;
 
   const [memoryRow] = memoryRows;
-
   if (!memoryRow) {
     return new ValidationError({ field: "retrievalId", reason: "points at a missing memory" });
   }
@@ -213,9 +293,7 @@ export async function buildEpisodicContext({
 
   const lines = [
     "## Episodic Memory",
-    query?.trim()
-      ? `- Retrieved because the active query was: ${query.trim()}`
-      : "- Retrieved from the most salient recent memories.",
+    query?.trim() ? `- Retrieved because the active query was: ${query.trim()}` : "- Retrieved from the most salient recent memories.",
   ];
 
   if (memories.length === 0) {
@@ -234,7 +312,7 @@ export async function buildEpisodicContext({
   } satisfies EpisodicContextSnapshot;
 }
 
-async function fetchMemories({
+async function fetchIndexedMemories({
   temple,
   project,
 }: {
@@ -249,7 +327,7 @@ async function fetchMemories({
   ).catch((cause) => new DatabaseQueryError({ operation: "fetch episodic memories", cause }));
   if (rows instanceof Error) return rows;
 
-  return rows.map(mapMemory);
+  return rows.filter((row) => row.status === "active").map(mapIndexedMemory);
 }
 
 async function listRecentEpisodes({
@@ -278,32 +356,41 @@ async function listRecentEpisodes({
   ).catch((cause) => new DatabaseQueryError({ operation: "list recent episodic memories", cause }));
   if (rows instanceof Error) return rows;
 
-  return rows.map((row) => ({
+  return rows.filter((row) => row.status === "active").map((row) => ({
     ...mapMemory(row),
     score: 0,
     retrievalId: "recent",
+    scoreBreakdown: {
+      lexical: 0,
+      semantic: 0,
+      phrase: 0,
+      tag: 0,
+      recency: 0,
+      salience: 0,
+      rerank: 0,
+      total: 0,
+    },
   }));
 }
 
-function scoreMemory({
-  memory,
-  queryTokens,
-  normalizedQuery,
+function episodicMemoryQuery({
+  temple,
+  project,
+  source,
 }: {
-  memory: StoredMemory;
-  queryTokens: string[];
-  normalizedQuery: string;
+  temple: TempleDatabase;
+  project: string | null;
+  source?: string | null;
 }) {
-  const contentTokens = tokenize(memory.content);
-  const summaryTokens = tokenize(memory.summary);
-  const tagTokens = memory.tags.flatMap((tag) => tokenize(tag));
-  const phraseBonus = normalizeText(memory.content).includes(normalizedQuery) ? 0.2 : 0;
-  const keywordScore = overlapRatio(queryTokens, memory.keywords) * 0.45;
-  const summaryScore = overlapRatio(queryTokens, summaryTokens) * 0.2;
-  const contentScore = overlapRatio(queryTokens, contentTokens) * 0.15;
-  const tagScore = overlapRatio(queryTokens, tagTokens) * 0.05;
-  const recencyScore = scoreRecency(memory.createdAt, 45) * 0.05;
-  const salienceScore = (memory.salience / 10) * 0.1;
+  if (project && source) {
+    return temple.db.select().from(episodicMemories).where(eq(episodicMemories.project, project));
+  }
+  if (project) {
+    return temple.db.select().from(episodicMemories).where(eq(episodicMemories.project, project));
+  }
+  return temple.db.select().from(episodicMemories);
+}
 
-  return keywordScore + summaryScore + contentScore + tagScore + recencyScore + salienceScore + phraseBonus;
+function normalizeEpisode(value: string) {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }

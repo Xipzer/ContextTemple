@@ -1,0 +1,49 @@
+{
+  "name": "contexttemple-runtime-v1",
+  "description": "Behavioral replay and first-response calibration benchmark using seeded transcripts and runtime orchestration.",
+  "seedTranscripts": [
+    {
+      "path": "fixtures/transcripts/extraction-session.txt",
+      "project": "demo"
+    }
+  ],
+  "behavioralCases": [
+    {
+      "id": "behavior-read-first",
+      "project": "demo",
+      "message": "Can you modify src/app.ts right now?",
+      "expectedRuleSubstrings": [
+        "Always read the target file before editing it."
+      ]
+    },
+    {
+      "id": "behavior-terse-style",
+      "project": "demo",
+      "message": "Give me the auth update.",
+      "expectedRuleSubstrings": [
+        "Keep responses terse and execution-focused."
+      ]
+    }
+  ],
+  "calibrationCases": [
+    {
+      "id": "calibration-auth-history",
+      "project": "demo",
+      "message": "What auth flow did we choose?",
+      "expectedRuleSubstrings": [
+        "Keep responses terse and execution-focused."
+      ],
+      "expectedMemorySubstrings": [
+        "OAuth device flow"
+      ]
+    },
+    {
+      "id": "calibration-auth-fact",
+      "project": "demo",
+      "message": "How does approval work for auth?",
+      "expectedMemorySubstrings": [
+        "polling for approval every five seconds"
+      ]
+    }
+  ]
+}

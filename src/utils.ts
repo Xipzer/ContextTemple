@@ -31,6 +31,31 @@ export function parseJsonStringArray({
   return parsed.filter((item): item is string => typeof item === "string");
 }
 
+export function parseJsonNumberArray({
+  value,
+  context,
+}: {
+  value: string;
+  context: string;
+}) {
+  const parsed = errore.try({
+    try: () => JSON.parse(value) as unknown,
+    catch: (cause) => new JsonParsingError({ context, cause }),
+  });
+
+  if (parsed instanceof Error) {
+    console.warn(parsed.message);
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    console.warn(`Stored JSON for ${context} was not an array`);
+    return [];
+  }
+
+  return parsed.filter((item): item is number => typeof item === "number" && Number.isFinite(item));
+}
+
 export function stringifyJson({
   value,
   context,

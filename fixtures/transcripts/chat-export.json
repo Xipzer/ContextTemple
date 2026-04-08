@@ -1,0 +1,16 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a local design assistant."
+    },
+    {
+      "role": "user",
+      "content": "Use Chakra UI for this app."
+    },
+    {
+      "role": "assistant",
+      "content": "I will use Chakra UI components."
+    }
+  ]
+}

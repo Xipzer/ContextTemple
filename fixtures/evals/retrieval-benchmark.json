@@ -1,0 +1,122 @@
+{
+  "name": "contexttemple-retrieval-v1",
+  "description": "Hand-authored retrieval benchmark with paraphrases and lexical-mismatch queries for hybrid episodic search.",
+  "memories": [
+    {
+      "id": "auth-device-flow",
+      "project": "core",
+      "content": "We decided to migrate authentication to OAuth device flow and keep refresh tokens server-side.",
+      "tags": ["auth", "oauth"],
+      "salience": 5
+    },
+    {
+      "id": "workflow-checks",
+      "project": "core",
+      "content": "Run the relevant checks before claiming a task is finished.",
+      "tags": ["workflow", "quality"],
+      "salience": 5
+    },
+    {
+      "id": "dashboard-graphite",
+      "project": "core",
+      "content": "The deployment dashboard uses graphite panels with emerald health checks.",
+      "tags": ["infra", "dashboard"],
+      "salience": 5
+    },
+    {
+      "id": "calendar-review",
+      "project": "ops",
+      "content": "The quarterly planning review was moved to Tuesday at 14:00 UTC.",
+      "tags": ["calendar", "meeting"],
+      "salience": 5
+    },
+    {
+      "id": "response-style",
+      "project": "core",
+      "content": "Keep responses terse and execution-focused when working with this user.",
+      "tags": ["style", "preference"],
+      "salience": 5
+    },
+    {
+      "id": "login-banner-ui",
+      "project": "core",
+      "content": "The login dashboard shows approval banners for newly invited employees.",
+      "tags": ["login", "ui"],
+      "salience": 5
+    },
+    {
+      "id": "device-inventory-approvals",
+      "project": "core",
+      "content": "Laptop inventory approvals are processed by the hardware audit service.",
+      "tags": ["inventory", "hardware"],
+      "salience": 5
+    },
+    {
+      "id": "deploy-tests",
+      "project": "core",
+      "content": "Verify visual snapshots before deploy in staging.",
+      "tags": ["verify", "deploy"],
+      "salience": 5
+    },
+    {
+      "id": "monitoring-console",
+      "project": "core",
+      "content": "The monitoring page shows amber graphs for queue latency and worker health.",
+      "tags": ["monitoring", "alerts"],
+      "salience": 5
+    },
+    {
+      "id": "planning-brief",
+      "project": "core",
+      "content": "The planning brief includes direct action items for operations leads.",
+      "tags": ["brief", "planning"],
+      "salience": 5
+    },
+    {
+      "id": "approval-codes",
+      "project": "core",
+      "content": "Approval codes are displayed on the enrollment screen for laptops.",
+      "tags": ["approval", "enrollment"],
+      "salience": 5
+    },
+    {
+      "id": "meeting-reminder",
+      "project": "ops",
+      "content": "Team sync reminders are sent every Tuesday morning.",
+      "tags": ["meeting", "reminder"],
+      "salience": 5
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-auth-paraphrase",
+      "project": "core",
+      "query": "identity signin credential polling",
+      "expectedMemoryIds": ["auth-device-flow"]
+    },
+    {
+      "id": "q-workflow-paraphrase",
+      "project": "core",
+      "query": "validated before saying complete",
+      "expectedMemoryIds": ["workflow-checks"]
+    },
+    {
+      "id": "q-dashboard",
+      "project": "core",
+      "query": "graphite monitoring page",
+      "expectedMemoryIds": ["dashboard-graphite"]
+    },
+    {
+      "id": "q-calendar",
+      "project": "ops",
+      "query": "what time is the planning meeting on tuesday",
+      "expectedMemoryIds": ["calendar-review"]
+    },
+    {
+      "id": "q-style",
+      "project": "core",
+      "query": "succinct answer mode",
+      "expectedMemoryIds": ["response-style"]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{"role":"system","content":"You are a coding assistant."}
+{"role":"user","content":"Always read the file before editing it."}
+{"role":"assistant","content":[{"type":"text","text":"Understood. I will inspect files first."}]}
+{"type":"tool_use","name":"read","input":{"path":"src/app.ts"}}
+{"type":"tool_result","name":"read","content":"export const app = createApp();"}
+{"role":"user","content":"We decided to use OAuth device flow for auth."}

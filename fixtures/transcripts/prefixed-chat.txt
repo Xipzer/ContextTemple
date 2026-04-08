@@ -1,0 +1,7 @@
+System: You are a local agent.
+User: Keep responses terse and execution-focused.
+Assistant: Understood.
+Tool(read): src/index.ts
+export const boot = () => startApp();
+User: We are shipping embeddings after transcript ingestion.
+Assistant: Noted.

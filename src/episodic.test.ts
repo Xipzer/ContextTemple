@@ -53,6 +53,44 @@ describe("episodic retrieval", () => {
 
     await temple.close();
   });
+
+  test("finds relevant memories through semantic expansion and reranking", async () => {
+    const temple = await createTemple();
+
+    const authMemory = await rememberEpisode({
+      temple,
+      input: {
+        project: "core",
+        content: "We decided to migrate authentication to OAuth device flow and keep refresh tokens server-side.",
+        tags: ["auth", "oauth"],
+      },
+    });
+    if (authMemory instanceof Error) throw authMemory;
+
+    const infraMemory = await rememberEpisode({
+      temple,
+      input: {
+        project: "core",
+        content: "The deployment server now runs on a graphite themed dashboard with emerald health checks.",
+        tags: ["infra"],
+      },
+    });
+    if (infraMemory instanceof Error) throw infraMemory;
+
+    const results = await searchEpisodes({
+      temple,
+      query: "login approval polling with device code",
+      project: "core",
+      limit: 2,
+    });
+    if (results instanceof Error) throw results;
+
+    expect(results[0]?.id).toBe(authMemory.id);
+    expect(results[0]?.scoreBreakdown.semantic).toBeGreaterThan(0);
+    expect(results[0]?.score).toBeGreaterThan(results[1]?.score ?? 0);
+
+    await temple.close();
+  });
 });
 
 async function createTemple() {

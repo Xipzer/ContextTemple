@@ -6,8 +6,12 @@ import { buildStartupContext } from "./context.ts";
 import type { TempleDatabase } from "./db.ts";
 import { recordRetrievalFeedback, rememberEpisode, searchEpisodes } from "./episodic.ts";
 import { ServerStartError, ValidationError } from "./errors.ts";
+import { extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns } from "./extract/candidates.ts";
+import { listMemoryConflictRecords, listRuleConflictRecords } from "./lifecycle/conflicts.ts";
+import { listPromotionRuns, promoteExtractionRun } from "./promote/candidates.ts";
 import { runConsolidationCycle } from "./consolidation.ts";
 import { recordObservation } from "./behavioral.ts";
+import { completeRuntimeTurn, prepareRuntimeTurn } from "./runtime/orchestrator.ts";
 import { getTempleStatus } from "./status.ts";
 import { behavioralDimensions } from "./types.ts";
 
@@ -30,6 +34,25 @@ const observationSchema = z.object({
 const feedbackSchema = z.object({
   retrievalId: z.string().min(1),
   accepted: z.boolean(),
+});
+
+const runtimeMessageSchema = z.object({
+  role: z.enum(["system", "user", "assistant", "tool"]),
+  content: z.string().min(1),
+  name: z.string().optional().nullable(),
+});
+
+const runtimePlanSchema = z.object({
+  project: z.string().optional().nullable(),
+  maxPromptTokens: z.number().int().positive().optional(),
+  messages: z.array(runtimeMessageSchema).min(1),
+});
+
+const runtimeCompleteSchema = z.object({
+  project: z.string().optional().nullable(),
+  sessionId: z.string().optional().nullable(),
+  assistantMessage: z.string().optional().nullable(),
+  messages: z.array(runtimeMessageSchema).min(1),
 });
 
 export function createTempleApp({ temple }: { temple: TempleDatabase }) {
@@ -67,6 +90,64 @@ export function createTempleApp({ temple }: { temple: TempleDatabase }) {
     return c.json(report);
   });
 
+  app.post("/api/extract/transcripts/:transcriptId", async (c) => {
+    const transcriptId = c.req.param("transcriptId");
+    const result = await extractTranscriptCandidates({ temple, transcriptId });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result, result.duplicate ? 200 : 201);
+  });
+
+  app.get("/api/extract/runs", async (c) => {
+    const runs = await listExtractionRuns({
+      temple,
+      project: c.req.query("project") ?? null,
+      transcriptId: c.req.query("transcriptId") ?? null,
+      limit: Number(c.req.query("limit") ?? 20),
+    });
+    if (runs instanceof Error) return errorResponse(c, runs);
+    return c.json(runs);
+  });
+
+  app.get("/api/extract/candidates", async (c) => {
+    const candidates = await listExtractionCandidates({
+      temple,
+      transcriptId: c.req.query("transcriptId") ?? null,
+      extractionRunId: c.req.query("extractionRunId") ?? null,
+    });
+    if (candidates instanceof Error) return errorResponse(c, candidates);
+    return c.json(candidates);
+  });
+
+  app.post("/api/promote/extractions/:extractionRunId", async (c) => {
+    const extractionRunId = c.req.param("extractionRunId");
+    const result = await promoteExtractionRun({ temple, extractionRunId });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result, result.duplicate ? 200 : 201);
+  });
+
+  app.get("/api/promote/runs", async (c) => {
+    const runs = await listPromotionRuns({
+      temple,
+      project: c.req.query("project") ?? null,
+      extractionRunId: c.req.query("extractionRunId") ?? null,
+      limit: Number(c.req.query("limit") ?? 20),
+    });
+    if (runs instanceof Error) return errorResponse(c, runs);
+    return c.json(runs);
+  });
+
+  app.get("/api/conflicts/rules", async (c) => {
+    const conflicts = await listRuleConflictRecords({ temple });
+    if (conflicts instanceof Error) return errorResponse(c, conflicts);
+    return c.json(conflicts);
+  });
+
+  app.get("/api/conflicts/memories", async (c) => {
+    const conflicts = await listMemoryConflictRecords({ temple });
+    if (conflicts instanceof Error) return errorResponse(c, conflicts);
+    return c.json(conflicts);
+  });
+
   app.get("/api/search", async (c) => {
     const query = c.req.query("q") ?? "";
     const limitRaw = c.req.query("limit");
@@ -79,6 +160,35 @@ export function createTempleApp({ temple }: { temple: TempleDatabase }) {
     });
     if (results instanceof Error) return errorResponse(c, results);
     return c.json(results);
+  });
+
+  app.post("/api/runtime/plan", async (c) => {
+    const body = await parseJsonBody({ c, schema: runtimePlanSchema });
+    if (body instanceof Error) return errorResponse(c, body);
+
+    const plan = await prepareRuntimeTurn({
+      temple,
+      project: body.project,
+      maxPromptTokens: body.maxPromptTokens,
+      messages: body.messages,
+    });
+    if (plan instanceof Error) return errorResponse(c, plan);
+    return c.json(plan);
+  });
+
+  app.post("/api/runtime/complete", async (c) => {
+    const body = await parseJsonBody({ c, schema: runtimeCompleteSchema });
+    if (body instanceof Error) return errorResponse(c, body);
+
+    const result = await completeRuntimeTurn({
+      temple,
+      project: body.project,
+      sessionId: body.sessionId,
+      assistantMessage: body.assistantMessage,
+      messages: body.messages,
+    });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result);
   });
 
   app.get("/api/context", async (c) => {

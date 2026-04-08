@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { and, asc, desc, eq, gte, isNull, or } from "drizzle-orm";
 
+import { detectAndPersistRuleConflicts } from "./lifecycle/conflicts.ts";
 import { behavioralRules, observations } from "./schema.ts";
 import { buildFingerprint, jaccardSimilarity, tokenize } from "./text.ts";
 import { clamp, parseJsonStringArray, stringifyJson } from "./utils.ts";
@@ -24,6 +25,7 @@ function mapObservation(row: typeof observations.$inferSelect): StoredObservatio
     fingerprint: row.fingerprint,
     evidence: row.evidence,
     confidence: row.confidence,
+    sourceCandidateId: row.sourceCandidateId,
     createdAt: row.createdAt,
     processedAt: row.processedAt,
   };
@@ -72,6 +74,7 @@ export async function recordObservation({
     fingerprint: buildFingerprint(statement),
     evidence: input.evidence?.trim() || null,
     confidence,
+    sourceCandidateId: input.sourceCandidateId?.trim() || null,
     createdAt: new Date(),
     processedAt: null,
   } satisfies typeof observations.$inferInsert;
@@ -135,6 +138,8 @@ export async function consolidateBehavioralMemory({
     updatedRules: 0,
     promotedRules: 0,
     retiredRules: 0,
+    conflictedRules: 0,
+    resolvedRuleConflicts: 0,
   };
 
   const pendingRows = await (
@@ -273,6 +278,11 @@ export async function consolidateBehavioralMemory({
     rule.status = "retired";
     report.retiredRules += 1;
   }
+
+  const conflictLifecycle = await detectAndPersistRuleConflicts({ temple, rules: workingRules });
+  if (conflictLifecycle instanceof Error) return conflictLifecycle;
+  report.conflictedRules = conflictLifecycle.conflictedRules;
+  report.resolvedRuleConflicts = conflictLifecycle.resolvedRuleConflicts;
 
   return report;
 }

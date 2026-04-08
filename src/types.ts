@@ -8,7 +8,8 @@ export const behavioralDimensions = [
 
 export type BehavioralDimension = (typeof behavioralDimensions)[number];
 export type RuleScope = "global" | "project";
-export type RuleStatus = "active" | "retired";
+export type RuleStatus = "active" | "retired" | "conflicted";
+export type MemoryStatus = "active" | "superseded" | "archived" | "conflicted";
 
 export type ObservationInput = {
   project?: string | null;
@@ -16,6 +17,7 @@ export type ObservationInput = {
   statement: string;
   evidence?: string | null;
   confidence?: number;
+  sourceCandidateId?: string | null;
 };
 
 export type MemoryInput = {
@@ -34,6 +36,7 @@ export type StoredObservation = {
   fingerprint: string;
   evidence: string | null;
   confidence: number;
+  sourceCandidateId: string | null;
   createdAt: Date;
   processedAt: Date | null;
 };
@@ -54,6 +57,17 @@ export type StoredRule = {
   sourceObservationIds: string[];
 };
 
+export type StoredRuleConflict = {
+  id: string;
+  leftRuleId: string;
+  rightRuleId: string;
+  project: string | null;
+  reason: string;
+  status: "open" | "resolved";
+  createdAt: Date;
+  resolvedAt: Date | null;
+};
+
 export type StoredMemory = {
   id: string;
   project: string | null;
@@ -62,6 +76,9 @@ export type StoredMemory = {
   summary: string;
   tags: string[];
   keywords: string[];
+  semanticTerms: string[];
+  status: MemoryStatus;
+  supersededByMemoryId: string | null;
   salience: number;
   createdAt: Date;
   updatedAt: Date;
@@ -69,9 +86,32 @@ export type StoredMemory = {
   accessCount: number;
 };
 
+export type StoredMemoryConflict = {
+  id: string;
+  leftMemoryId: string;
+  rightMemoryId: string;
+  project: string | null;
+  reason: string;
+  status: "open" | "resolved";
+  createdAt: Date;
+  resolvedAt: Date | null;
+};
+
+export type MemoryScoreBreakdown = {
+  lexical: number;
+  semantic: number;
+  phrase: number;
+  tag: number;
+  recency: number;
+  salience: number;
+  rerank: number;
+  total: number;
+};
+
 export type MemorySearchResult = StoredMemory & {
   score: number;
   retrievalId: string;
+  scoreBreakdown: MemoryScoreBreakdown;
 };
 
 export type ConsolidationReport = {
@@ -80,6 +120,8 @@ export type ConsolidationReport = {
   updatedRules: number;
   promotedRules: number;
   retiredRules: number;
+  conflictedRules: number;
+  resolvedRuleConflicts: number;
 };
 
 export type BehavioralContextSnapshot = {
@@ -105,4 +147,11 @@ export type TempleStatus = {
   activeRules: number;
   episodicMemories: number;
   retrievalEvents: number;
+  transcripts: number;
+  transcriptEvents: number;
+  extractionRuns: number;
+  extractedCandidates: number;
+  promotionRuns: number;
+  ruleConflicts: number;
+  memoryConflicts: number;
 };

@@ -1,6 +1,8 @@
 import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-import type { BehavioralDimension, RuleScope, RuleStatus } from "./types.ts";
+import type { ExtractionCandidateKind } from "./extract/types.ts";
+import type { TranscriptActor, TranscriptEventType, TranscriptFormat } from "./ingest/types.ts";
+import type { BehavioralDimension, MemoryStatus, RuleScope, RuleStatus } from "./types.ts";
 
 export const observations = sqliteTable("observations", {
   id: text("id").primaryKey(),
@@ -10,6 +12,7 @@ export const observations = sqliteTable("observations", {
   fingerprint: text("fingerprint").notNull(),
   evidence: text("evidence"),
   confidence: real("confidence").notNull(),
+  sourceCandidateId: text("source_candidate_id"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   processedAt: integer("processed_at", { mode: "timestamp_ms" }),
 });
@@ -30,6 +33,21 @@ export const behavioralRules = sqliteTable("behavioral_rules", {
   sourceObservationIdsJson: text("source_observation_ids_json").notNull(),
 });
 
+export const ruleConflicts = sqliteTable("rule_conflicts", {
+  id: text("id").primaryKey(),
+  leftRuleId: text("left_rule_id")
+    .notNull()
+    .references(() => behavioralRules.id, { onDelete: "cascade" }),
+  rightRuleId: text("right_rule_id")
+    .notNull()
+    .references(() => behavioralRules.id, { onDelete: "cascade" }),
+  project: text("project"),
+  reason: text("reason").notNull(),
+  status: text("status").$type<"open" | "resolved">().notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
+});
+
 export const episodicMemories = sqliteTable("episodic_memories", {
   id: text("id").primaryKey(),
   project: text("project"),
@@ -38,11 +56,30 @@ export const episodicMemories = sqliteTable("episodic_memories", {
   summary: text("summary").notNull(),
   tagsJson: text("tags_json").notNull(),
   keywordsJson: text("keywords_json").notNull(),
+  semanticTermsJson: text("semantic_terms_json").notNull(),
+  embeddingJson: text("embedding_json").notNull(),
+  status: text("status").$type<MemoryStatus>().notNull(),
+  supersededByMemoryId: text("superseded_by_memory_id"),
   salience: real("salience").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   lastAccessedAt: integer("last_accessed_at", { mode: "timestamp_ms" }),
   accessCount: integer("access_count").notNull(),
+});
+
+export const memoryConflicts = sqliteTable("memory_conflicts", {
+  id: text("id").primaryKey(),
+  leftMemoryId: text("left_memory_id")
+    .notNull()
+    .references(() => episodicMemories.id, { onDelete: "cascade" }),
+  rightMemoryId: text("right_memory_id")
+    .notNull()
+    .references(() => episodicMemories.id, { onDelete: "cascade" }),
+  project: text("project"),
+  reason: text("reason").notNull(),
+  status: text("status").$type<"open" | "resolved">().notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
 });
 
 export const retrievalEvents = sqliteTable("retrieval_events", {
@@ -51,5 +88,75 @@ export const retrievalEvents = sqliteTable("retrieval_events", {
   memoryId: text("memory_id").notNull(),
   score: real("score").notNull(),
   accepted: integer("accepted", { mode: "boolean" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const transcriptSources = sqliteTable("transcript_sources", {
+  id: text("id").primaryKey(),
+  project: text("project"),
+  sourcePath: text("source_path").notNull(),
+  sourceLabel: text("source_label"),
+  format: text("format").$type<TranscriptFormat>().notNull(),
+  checksum: text("checksum").notNull(),
+  eventCount: integer("event_count").notNull(),
+  importedAt: integer("imported_at", { mode: "timestamp_ms" }).notNull(),
+  startedAt: integer("started_at", { mode: "timestamp_ms" }),
+  endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+});
+
+export const transcriptEvents = sqliteTable("transcript_events", {
+  id: text("id").primaryKey(),
+  transcriptId: text("transcript_id")
+    .notNull()
+    .references(() => transcriptSources.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  actor: text("actor").$type<TranscriptActor>().notNull(),
+  eventType: text("event_type").$type<TranscriptEventType>().notNull(),
+  name: text("name"),
+  content: text("content").notNull(),
+  occurredAt: integer("occurred_at", { mode: "timestamp_ms" }),
+  metadataJson: text("metadata_json").notNull(),
+});
+
+export const extractionRuns = sqliteTable("extraction_runs", {
+  id: text("id").primaryKey(),
+  transcriptId: text("transcript_id")
+    .notNull()
+    .references(() => transcriptSources.id, { onDelete: "cascade" }),
+  project: text("project"),
+  engineVersion: text("engine_version").notNull(),
+  candidateCount: integer("candidate_count").notNull(),
+  warningsJson: text("warnings_json").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const extractedCandidates = sqliteTable("extracted_candidates", {
+  id: text("id").primaryKey(),
+  extractionRunId: text("extraction_run_id")
+    .notNull()
+    .references(() => extractionRuns.id, { onDelete: "cascade" }),
+  transcriptId: text("transcript_id")
+    .notNull()
+    .references(() => transcriptSources.id, { onDelete: "cascade" }),
+  project: text("project"),
+  candidateType: text("candidate_type").$type<ExtractionCandidateKind>().notNull(),
+  behavioralDimension: text("behavioral_dimension").$type<BehavioralDimension>(),
+  statement: text("statement").notNull(),
+  evidence: text("evidence").notNull(),
+  confidence: real("confidence").notNull(),
+  sourceEventIdsJson: text("source_event_ids_json").notNull(),
+  metadataJson: text("metadata_json").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const promotionRuns = sqliteTable("promotion_runs", {
+  id: text("id").primaryKey(),
+  extractionRunId: text("extraction_run_id")
+    .notNull()
+    .references(() => extractionRuns.id, { onDelete: "cascade" }),
+  project: text("project"),
+  policyVersion: text("policy_version").notNull(),
+  promotedObservationIdsJson: text("promoted_observation_ids_json").notNull(),
+  promotedMemoryIdsJson: text("promoted_memory_ids_json").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
