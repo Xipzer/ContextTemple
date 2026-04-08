@@ -4,6 +4,8 @@ export * from "./config.ts";
 export * from "./consolidation.ts";
 export * from "./context.ts";
 export * from "./db.ts";
+export * from "./embeddings/cluster.ts";
+export * from "./embeddings/provider.ts";
 export * from "./episodic.ts";
 export * from "./evals/replay.ts";
 export * from "./evals/retrieval.ts";

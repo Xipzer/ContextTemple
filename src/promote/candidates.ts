@@ -16,9 +16,11 @@ const promotionPolicyVersion = "candidate-promotion-v1";
 export async function promoteExtractionRun({
   temple,
   extractionRunId,
+  requireApproval = false,
 }: {
   temple: TempleDatabase;
   extractionRunId: string;
+  requireApproval?: boolean;
 }) {
   const runRows = await temple.db
     .select()
@@ -53,6 +55,7 @@ export async function promoteExtractionRun({
         value: existing.promotedMemoryIdsJson,
         context: `promotion_run:${existing.id}:memory_ids`,
       }),
+      skippedCandidateIds: [],
     } satisfies PromotionResult;
   }
 
@@ -61,8 +64,19 @@ export async function promoteExtractionRun({
 
   const promotedObservationIds: string[] = [];
   const promotedMemoryIds: string[] = [];
+  const skippedCandidateIds: string[] = [];
 
   for (const candidate of candidates) {
+    if (candidate.reviewStatus === "rejected") {
+      skippedCandidateIds.push(candidate.id);
+      continue;
+    }
+
+    if (requireApproval && candidate.reviewStatus !== "approved") {
+      skippedCandidateIds.push(candidate.id);
+      continue;
+    }
+
     if (candidate.candidateType === "observation" && candidate.behavioralDimension) {
       const observationRows = await temple.db
         .select({ id: observations.id })
@@ -74,6 +88,7 @@ export async function promoteExtractionRun({
       const existingObservation = observationRows[0];
       if (existingObservation) {
         promotedObservationIds.push(existingObservation.id);
+        await markCandidatePromoted({ temple, candidateId: candidate.id });
         continue;
       }
 
@@ -91,6 +106,7 @@ export async function promoteExtractionRun({
       if (observation instanceof Error) return observation;
 
       promotedObservationIds.push(observation.id);
+      await markCandidatePromoted({ temple, candidateId: candidate.id });
       continue;
     }
 
@@ -106,6 +122,7 @@ export async function promoteExtractionRun({
       const existingMemory = existingMemories[0];
       if (existingMemory) {
         promotedMemoryIds.push(existingMemory.id);
+        await markCandidatePromoted({ temple, candidateId: candidate.id });
         continue;
       }
 
@@ -122,6 +139,7 @@ export async function promoteExtractionRun({
       if (memory instanceof Error) return memory;
 
       promotedMemoryIds.push(memory.id);
+      await markCandidatePromoted({ temple, candidateId: candidate.id });
     }
   }
 
@@ -157,6 +175,7 @@ export async function promoteExtractionRun({
     run: mapPromotionRun(runRow),
     promotedObservationIds,
     promotedMemoryIds,
+    skippedCandidateIds,
   } satisfies PromotionResult;
 }
 
@@ -215,4 +234,19 @@ function buildMemorySalience(candidate: StoredExtractionCandidate) {
   if (candidate.candidateType === "decision") return 8;
   if (candidate.candidateType === "fact") return 7;
   return 6;
+}
+
+async function markCandidatePromoted({
+  temple,
+  candidateId,
+}: {
+  temple: TempleDatabase;
+  candidateId: string;
+}) {
+  const result = await temple.db
+    .update(extractedCandidates)
+    .set({ reviewStatus: "promoted", promotedAt: new Date() })
+    .where(eq(extractedCandidates.id, candidateId))
+    .catch((cause) => new DatabaseQueryError({ operation: "mark extraction candidate promoted", cause }));
+  return result instanceof Error ? result : null;
 }

@@ -1,6 +1,6 @@
 # ContextTemple Architecture
 
-Current release target in this document: `1.0.0`
+Current release target in this document: `1.1.0`
 
 ## Mission
 
@@ -135,7 +135,13 @@ Score components:
 - salience bonus
 - reranking over the top candidate set
 
-The current semantic layer uses local hashed vectors and semantic expansion rules so the retrieval path remains offline-friendly while already improving over purely lexical search.
+The current semantic layer supports both the local hashed fallback and stronger learned embedding providers through a shared embedding abstraction.
+
+Additional capabilities now present:
+
+- OpenAI-compatible embedding endpoints
+- llama.cpp-compatible embedding endpoints
+- active forgetting driven by usefulness feedback
 
 ## Current evaluation surface
 
@@ -169,6 +175,10 @@ Current capabilities:
 - reactivation of rules when open conflicts clear
 - memory supersession when newer same-source statements replace older ones
 - memory conflict detection for incompatible active memories
+- operator resolution flows for rule conflicts
+- operator resolution flows for memory conflicts
+- candidate review states before promotion
+- semantic clustering for review queues
 
 ## Current safety surface
 
@@ -231,31 +241,15 @@ Current capabilities:
 - promotion of extracted observations into behavioral memory
 - promotion of extracted decisions, facts, and outcomes into episodic memory
 
-## Planned next layers
+## Remaining optional expansion
 
-### Smarter promotion policy
+The originally planned core surface is now implemented.
 
-Refine promotion so extracted candidates become higher-quality durable memory through:
+Future expansion is optional and may include:
 
-- better duplicate detection
-- contradiction-aware state updates
-- candidate conflict resolution
-- policy-specific promotion thresholds
-
-### Higher-quality embedding providers
-
-Replace the current hashed semantic vectors with stronger learned embedding providers while preserving the same hybrid retrieval contract.
-
-### Broader evaluation harness
-
-Add benchmark families beyond retrieval:
-
-- memory drift
-- operator review flows
-
-### Embedding-backed consolidation
-
-Use semantic clustering to merge observations that are equivalent but lexically different.
+- stronger learned embedding models by default
+- richer multi-user operator workflows
+- distributed sync and cloud-backed storage
 
 ### Memory quality loop
 

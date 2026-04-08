@@ -3,6 +3,7 @@ import type { BehavioralDimension } from "../types.ts";
 export const extractionCandidateKinds = ["decision", "observation", "fact", "outcome"] as const;
 
 export type ExtractionCandidateKind = (typeof extractionCandidateKinds)[number];
+export type ExtractionCandidateReviewStatus = "pending" | "approved" | "rejected" | "promoted";
 
 export type ExtractionRun = {
   id: string;
@@ -26,6 +27,10 @@ export type StoredExtractionCandidate = {
   confidence: number;
   sourceEventIds: string[];
   metadata: Record<string, unknown>;
+  reviewStatus: ExtractionCandidateReviewStatus;
+  reviewNote: string | null;
+  reviewedAt: Date | null;
+  promotedAt: Date | null;
   createdAt: Date;
 };
 
@@ -50,6 +55,7 @@ export type PromotionResult = {
   run: PromotionRun;
   promotedObservationIds: string[];
   promotedMemoryIds: string[];
+  skippedCandidateIds: string[];
 };
 
 export type ExtractionCandidateDraft = {
@@ -60,4 +66,12 @@ export type ExtractionCandidateDraft = {
   confidence: number;
   sourceEventIds: string[];
   metadata: Record<string, unknown>;
+};
+
+export type ExtractionCandidateCluster = {
+  id: string;
+  project: string | null;
+  label: string;
+  candidateIds: string[];
+  similarity: number;
 };

@@ -69,6 +69,49 @@ describe("llama.cpp bridge", () => {
 
     await temple.close();
   });
+
+  test("streams llama.cpp responses through the bridge", async () => {
+    const temple = await seededTemple();
+
+    const upstream = Bun.serve({
+      port: 0,
+      fetch: async () =>
+        new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"world"}}]}\n\n',
+            'data: [DONE]\n\n',
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    servers.push(upstream);
+
+    const app = createLlamaCppBridgeApp({
+      temple,
+      llamaCppUrl: `http://127.0.0.1:${upstream.port}`,
+      defaultProject: "demo",
+    });
+    const bridge = Bun.serve({ port: 0, fetch: app.fetch });
+    servers.push(bridge);
+
+    const response = await fetch(`http://127.0.0.1:${bridge.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gemma",
+        stream: true,
+        messages: [{ role: "user", content: "Give me the auth update." }],
+      }),
+    });
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("Hello ");
+    expect(text).toContain("world");
+
+    await temple.close();
+  });
 });
 
 async function seededTemple() {

@@ -42,7 +42,7 @@ ContextTemple combines both:
 
 ## Release Status
 
-`1.0.0` is the first full release of ContextTemple.
+`1.1.0` is the first release where the original planned feature surface is fully complete with no active roadmap debt remaining.
 
 Current shipped surface:
 
@@ -59,7 +59,7 @@ Current shipped surface:
 
 ## Current implementation
 
-`1.0.0` ships the first complete release surface:
+`1.1.0` ships the complete release surface:
 
 - SQLite-backed local storage through Drizzle + libSQL
 - canonical transcript ingestion with persisted replayable events
@@ -70,7 +70,12 @@ Current shipped surface:
 - retrieval benchmark harness with lexical-vs-hybrid comparison
 - runtime orchestrator with retrieval and writeback policy
 - contradiction-aware lifecycle management for rules and memories
+- explicit candidate review and conflict resolution flows
+- active forgetting driven by retrieval usefulness feedback
+- learned embedding provider abstraction with local and remote provider support
+- semantic clustering for pending review queues
 - llama.cpp bridge with OpenAI-compatible `/v1/chat/completions`
+- streamed llama.cpp bridge support
 - MCP server over stdio for MCP-compatible clients
 - backup, restore, and project-scoped purge tooling
 - behavioral replay, first-response calibration, and local-model uplift evals
@@ -129,6 +134,12 @@ bun run src/cli.ts bridge llamacpp --llama-url http://127.0.0.1:8080 --port 4001
 # start the MCP server over stdio
 bun run src/cli.ts mcp
 
+# review, resolve, and forget low-value memory
+bun run src/cli.ts review clusters --project demo
+bun run src/cli.ts review candidate <candidate-id> --status approve
+bun run src/cli.ts conflicts resolve-rule <conflict-id> --winner left
+bun run src/cli.ts memory forget --project demo --dry-run
+
 # backup and restore the SQLite store
 bun run src/cli.ts snapshot export ./backups/contexttemple.db
 bun run src/cli.ts snapshot import ./backups/contexttemple.db
@@ -162,6 +173,8 @@ bun run src/cli.ts serve --port 4000
 - `extract transcript`: persist extracted decisions, observations, facts, and outcomes
 - `extract runs`: inspect extraction runs
 - `extract candidates`: inspect extracted candidates
+- `review candidate`: approve, reject, or reset an extracted candidate
+- `review clusters`: cluster pending candidates for operator review
 - `promote extraction`: move extracted candidates into durable observations and episodic memory
 - `promote runs`: inspect promotion runs
 - `eval retrieval`: run the committed retrieval benchmark with lexical vs hybrid comparison
@@ -171,7 +184,10 @@ bun run src/cli.ts serve --port 4000
 - `runtime plan`: preview the runtime orchestrator plan for a user turn
 - `runtime complete`: write back observations and durable outcomes for a completed turn
 - `conflicts rules`: inspect rule conflicts
+- `conflicts resolve-rule`: resolve a rule conflict
 - `conflicts memories`: inspect memory conflicts
+- `conflicts resolve-memory`: resolve a memory conflict
+- `memory forget`: archive low-value memories using usefulness feedback
 - `snapshot export`: backup the SQLite store
 - `snapshot import`: restore the SQLite store
 - `snapshot purge-project`: delete one project's stored memory and derived artifacts
@@ -191,10 +207,15 @@ bun run src/cli.ts serve --port 4000
 - `POST /api/extract/transcripts/:transcriptId`
 - `GET /api/extract/runs`
 - `GET /api/extract/candidates`
+- `POST /api/review/candidates/:candidateId`
+- `GET /api/review/clusters`
 - `POST /api/promote/extractions/:extractionRunId`
 - `GET /api/promote/runs`
 - `GET /api/conflicts/rules`
+- `POST /api/conflicts/rules/:conflictId/resolve`
 - `GET /api/conflicts/memories`
+- `POST /api/conflicts/memories/:conflictId/resolve`
+- `POST /api/maintenance/forget`
 - `POST /api/runtime/plan`
 - `POST /api/runtime/complete`
 - `GET /api/search?q=...`
@@ -203,20 +224,19 @@ bun run src/cli.ts serve --port 4000
 
 ## Architecture
 
-See `docs/architecture.md` for the full design, including the shipped runtime, lifecycle, evaluation, bridge, and MCP layers plus the remaining roadmap beyond `1.0.0`.
+See `docs/architecture.md` for the full design, including the shipped runtime, lifecycle, evaluation, bridge, MCP, review, and forgetting layers.
 
 For the strict deployment gate and implementation order toward a real `v1.0`, see `docs/v1-readiness.md`.
 
 ## Roadmap
 
-- higher-quality learned embedding providers and clustering
-- retrieval usefulness scoring and active forgetting
-- richer contradiction resolution policies and operator review flows
-- streamed local-model bridge support
+There are no active core roadmap items remaining from the original release plan.
+
+Future work from here is optional expansion rather than unfinished core scope.
 
 ## Version
 
-Current release: `1.0.0`
+Current release: `1.1.0`
 
 ## License
 

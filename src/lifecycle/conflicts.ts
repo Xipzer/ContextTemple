@@ -95,6 +95,68 @@ export async function listRuleConflictRecords({ temple }: { temple: TempleDataba
   return rows.map(mapRuleConflict);
 }
 
+export async function resolveRuleConflict({
+  temple,
+  conflictId,
+  winner,
+  note,
+}: {
+  temple: TempleDatabase;
+  conflictId: string;
+  winner: "left" | "right" | "both";
+  note?: string | null;
+}) {
+  const rows = await temple.db.select().from(ruleConflicts).where(eq(ruleConflicts.id, conflictId)).catch(
+    (cause) => new DatabaseQueryError({ operation: "fetch rule conflict for resolution", cause }),
+  );
+  if (rows instanceof Error) return rows;
+
+  const conflict = rows[0];
+  if (!conflict) return new DatabaseQueryError({ operation: "resolve rule conflict", cause: new Error("conflict not found") });
+
+  const updates =
+    winner === "left"
+      ? [
+          { id: conflict.leftRuleId, status: "active" as const },
+          { id: conflict.rightRuleId, status: "retired" as const },
+        ]
+      : winner === "right"
+        ? [
+            { id: conflict.leftRuleId, status: "retired" as const },
+            { id: conflict.rightRuleId, status: "active" as const },
+          ]
+        : [
+            { id: conflict.leftRuleId, status: "active" as const },
+            { id: conflict.rightRuleId, status: "active" as const },
+          ];
+
+  for (const update of updates) {
+    const result = await temple.db
+      .update(behavioralRules)
+      .set({ status: update.status })
+      .where(eq(behavioralRules.id, update.id))
+      .catch((cause) => new DatabaseQueryError({ operation: "apply rule conflict resolution", cause }));
+    if (result instanceof Error) return result;
+  }
+
+  const resolveResult = await temple.db
+    .update(ruleConflicts)
+    .set({
+      status: "resolved",
+      resolutionAction: winner,
+      resolutionNote: note?.trim() || null,
+      resolvedAt: new Date(),
+    })
+    .where(eq(ruleConflicts.id, conflictId))
+    .catch((cause) => new DatabaseQueryError({ operation: "store rule conflict resolution", cause }));
+  if (resolveResult instanceof Error) return resolveResult;
+
+  return {
+    conflictId,
+    winner,
+  };
+}
+
 export async function applyMemoryLifecycle({
   temple,
   insertedMemory,
@@ -176,6 +238,68 @@ export async function listMemoryConflictRecords({ temple }: { temple: TempleData
   );
   if (rows instanceof Error) return rows;
   return rows.map(mapMemoryConflict);
+}
+
+export async function resolveMemoryConflict({
+  temple,
+  conflictId,
+  winner,
+  note,
+}: {
+  temple: TempleDatabase;
+  conflictId: string;
+  winner: "left" | "right" | "both";
+  note?: string | null;
+}) {
+  const rows = await temple.db.select().from(memoryConflicts).where(eq(memoryConflicts.id, conflictId)).catch(
+    (cause) => new DatabaseQueryError({ operation: "fetch memory conflict for resolution", cause }),
+  );
+  if (rows instanceof Error) return rows;
+
+  const conflict = rows[0];
+  if (!conflict) return new DatabaseQueryError({ operation: "resolve memory conflict", cause: new Error("conflict not found") });
+
+  const updates =
+    winner === "left"
+      ? [
+          { id: conflict.leftMemoryId, status: "active" as const, supersededByMemoryId: null },
+          { id: conflict.rightMemoryId, status: "archived" as const, supersededByMemoryId: conflict.leftMemoryId },
+        ]
+      : winner === "right"
+        ? [
+            { id: conflict.leftMemoryId, status: "archived" as const, supersededByMemoryId: conflict.rightMemoryId },
+            { id: conflict.rightMemoryId, status: "active" as const, supersededByMemoryId: null },
+          ]
+        : [
+            { id: conflict.leftMemoryId, status: "active" as const, supersededByMemoryId: null },
+            { id: conflict.rightMemoryId, status: "active" as const, supersededByMemoryId: null },
+          ];
+
+  for (const update of updates) {
+    const result = await temple.db
+      .update(episodicMemories)
+      .set({ status: update.status, supersededByMemoryId: update.supersededByMemoryId, updatedAt: new Date() })
+      .where(eq(episodicMemories.id, update.id))
+      .catch((cause) => new DatabaseQueryError({ operation: "apply memory conflict resolution", cause }));
+    if (result instanceof Error) return result;
+  }
+
+  const resolveResult = await temple.db
+    .update(memoryConflicts)
+    .set({
+      status: "resolved",
+      resolutionAction: winner,
+      resolutionNote: note?.trim() || null,
+      resolvedAt: new Date(),
+    })
+    .where(eq(memoryConflicts.id, conflictId))
+    .catch((cause) => new DatabaseQueryError({ operation: "store memory conflict resolution", cause }));
+  if (resolveResult instanceof Error) return resolveResult;
+
+  return {
+    conflictId,
+    winner,
+  };
 }
 
 function collectRuleConflictPairs(rules: StoredRule[]) {
@@ -283,6 +407,8 @@ function mapRuleConflict(row: typeof ruleConflicts.$inferSelect): StoredRuleConf
     project: row.project,
     reason: row.reason,
     status: row.status,
+    resolutionAction: row.resolutionAction,
+    resolutionNote: row.resolutionNote,
     createdAt: row.createdAt,
     resolvedAt: row.resolvedAt,
   };
@@ -296,6 +422,8 @@ function mapMemoryConflict(row: typeof memoryConflicts.$inferSelect): StoredMemo
     project: row.project,
     reason: row.reason,
     status: row.status,
+    resolutionAction: row.resolutionAction,
+    resolutionNote: row.resolutionNote,
     createdAt: row.createdAt,
     resolvedAt: row.resolvedAt,
   };

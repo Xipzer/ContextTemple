@@ -9,9 +9,10 @@ import { buildStartupContext } from "../context.ts";
 import { openTempleDatabase } from "../db.ts";
 import { rememberEpisode, searchEpisodes } from "../episodic.ts";
 import { ValidationError } from "../errors.ts";
-import { extractTranscriptCandidates } from "../extract/candidates.ts";
+import { clusterExtractionCandidates, extractTranscriptCandidates, reviewExtractionCandidate } from "../extract/candidates.ts";
 import { importTranscript } from "../ingest/transcripts.ts";
-import { listMemoryConflictRecords, listRuleConflictRecords } from "../lifecycle/conflicts.ts";
+import { listMemoryConflictRecords, listRuleConflictRecords, resolveMemoryConflict, resolveRuleConflict } from "../lifecycle/conflicts.ts";
+import { runActiveForgetting } from "../maintenance/forget.ts";
 import { promoteExtractionRun } from "../promote/candidates.ts";
 import { completeRuntimeTurn, prepareRuntimeTurn } from "../runtime/orchestrator.ts";
 import { getTempleStatus } from "../status.ts";
@@ -72,6 +73,18 @@ const toolSchemas = {
   }),
   contexttemple_promote_extraction: z.object({
     extractionRunId: z.string().min(1),
+    requireApproval: z.boolean().optional(),
+    homeDir: z.string().optional().nullable(),
+  }),
+  contexttemple_review_candidate: z.object({
+    candidateId: z.string().min(1),
+    status: z.enum(["approve", "reject", "reset"]),
+    note: z.string().optional().nullable(),
+    homeDir: z.string().optional().nullable(),
+  }),
+  contexttemple_candidate_clusters: z.object({
+    project: z.string().optional().nullable(),
+    extractionRunId: z.string().optional().nullable(),
     homeDir: z.string().optional().nullable(),
   }),
   contexttemple_runtime_plan: z.object({
@@ -91,6 +104,25 @@ const toolSchemas = {
     homeDir: z.string().optional().nullable(),
   }),
   contexttemple_list_memory_conflicts: z.object({
+    homeDir: z.string().optional().nullable(),
+  }),
+  contexttemple_resolve_rule_conflict: z.object({
+    conflictId: z.string().min(1),
+    winner: z.enum(["left", "right", "both"]),
+    note: z.string().optional().nullable(),
+    homeDir: z.string().optional().nullable(),
+  }),
+  contexttemple_resolve_memory_conflict: z.object({
+    conflictId: z.string().min(1),
+    winner: z.enum(["left", "right", "both"]),
+    note: z.string().optional().nullable(),
+    homeDir: z.string().optional().nullable(),
+  }),
+  contexttemple_run_active_forgetting: z.object({
+    project: z.string().optional().nullable(),
+    usefulnessThreshold: z.number().min(0).max(1).optional(),
+    maxAgeDays: z.number().int().positive().optional(),
+    dryRun: z.boolean().optional(),
     homeDir: z.string().optional().nullable(),
   }),
 } as const;
@@ -137,6 +169,16 @@ export const contextTempleMcpTools = [
     schema: toolSchemas.contexttemple_promote_extraction,
   },
   {
+    name: "contexttemple_review_candidate",
+    description: "Approve, reject, or reset an extracted candidate before promotion.",
+    schema: toolSchemas.contexttemple_review_candidate,
+  },
+  {
+    name: "contexttemple_candidate_clusters",
+    description: "Cluster pending extracted candidates by semantic similarity for operator review.",
+    schema: toolSchemas.contexttemple_candidate_clusters,
+  },
+  {
     name: "contexttemple_runtime_plan",
     description: "Prepare a runtime turn plan including retrieval decisions and system messages.",
     schema: toolSchemas.contexttemple_runtime_plan,
@@ -155,6 +197,21 @@ export const contextTempleMcpTools = [
     name: "contexttemple_list_memory_conflicts",
     description: "List currently detected episodic memory conflicts.",
     schema: toolSchemas.contexttemple_list_memory_conflicts,
+  },
+  {
+    name: "contexttemple_resolve_rule_conflict",
+    description: "Resolve a behavioral rule conflict by choosing the winning side.",
+    schema: toolSchemas.contexttemple_resolve_rule_conflict,
+  },
+  {
+    name: "contexttemple_resolve_memory_conflict",
+    description: "Resolve an episodic memory conflict by choosing the winning side.",
+    schema: toolSchemas.contexttemple_resolve_memory_conflict,
+  },
+  {
+    name: "contexttemple_run_active_forgetting",
+    description: "Archive low-value active memories using usefulness feedback and age thresholds.",
+    schema: toolSchemas.contexttemple_run_active_forgetting,
   },
 ] as const;
 
@@ -265,7 +322,24 @@ export async function executeContextTempleMcpTool({
       case "contexttemple_extract_transcript":
         return await extractTranscriptCandidates({ temple, transcriptId: input.transcriptId as string });
       case "contexttemple_promote_extraction":
-        return await promoteExtractionRun({ temple, extractionRunId: input.extractionRunId as string });
+        return await promoteExtractionRun({
+          temple,
+          extractionRunId: input.extractionRunId as string,
+          requireApproval: Boolean(input.requireApproval),
+        });
+      case "contexttemple_review_candidate":
+        return await reviewExtractionCandidate({
+          temple,
+          candidateId: input.candidateId as string,
+          status: input.status as "approve" | "reject" | "reset",
+          note: (input.note as string | null | undefined) ?? null,
+        });
+      case "contexttemple_candidate_clusters":
+        return await clusterExtractionCandidates({
+          temple,
+          project: (input.project as string | null | undefined) ?? null,
+          extractionRunId: (input.extractionRunId as string | null | undefined) ?? null,
+        });
       case "contexttemple_runtime_plan":
         return await prepareRuntimeTurn({
           temple,
@@ -285,6 +359,28 @@ export async function executeContextTempleMcpTool({
         return await listRuleConflictRecords({ temple });
       case "contexttemple_list_memory_conflicts":
         return await listMemoryConflictRecords({ temple });
+      case "contexttemple_resolve_rule_conflict":
+        return await resolveRuleConflict({
+          temple,
+          conflictId: input.conflictId as string,
+          winner: input.winner as "left" | "right" | "both",
+          note: (input.note as string | null | undefined) ?? null,
+        });
+      case "contexttemple_resolve_memory_conflict":
+        return await resolveMemoryConflict({
+          temple,
+          conflictId: input.conflictId as string,
+          winner: input.winner as "left" | "right" | "both",
+          note: (input.note as string | null | undefined) ?? null,
+        });
+      case "contexttemple_run_active_forgetting":
+        return await runActiveForgetting({
+          temple,
+          project: (input.project as string | null | undefined) ?? null,
+          usefulnessThreshold: input.usefulnessThreshold as number | undefined,
+          maxAgeDays: input.maxAgeDays as number | undefined,
+          dryRun: Boolean(input.dryRun),
+        });
     }
   } finally {
     await temple.close();

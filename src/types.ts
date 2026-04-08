@@ -10,6 +10,7 @@ export type BehavioralDimension = (typeof behavioralDimensions)[number];
 export type RuleScope = "global" | "project";
 export type RuleStatus = "active" | "retired" | "conflicted";
 export type MemoryStatus = "active" | "superseded" | "archived" | "conflicted";
+export type EmbeddingProviderName = "hashed" | "openai-compatible" | "llamacpp";
 
 export type ObservationInput = {
   project?: string | null;
@@ -64,6 +65,8 @@ export type StoredRuleConflict = {
   project: string | null;
   reason: string;
   status: "open" | "resolved";
+  resolutionAction: string | null;
+  resolutionNote: string | null;
   createdAt: Date;
   resolvedAt: Date | null;
 };
@@ -77,9 +80,15 @@ export type StoredMemory = {
   tags: string[];
   keywords: string[];
   semanticTerms: string[];
+  embeddingProvider: EmbeddingProviderName;
+  embeddingModel: string | null;
   status: MemoryStatus;
   supersededByMemoryId: string | null;
   salience: number;
+  positiveFeedbackCount: number;
+  negativeFeedbackCount: number;
+  usefulnessScore: number;
+  lastFeedbackAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   lastAccessedAt: Date | null;
@@ -93,6 +102,8 @@ export type StoredMemoryConflict = {
   project: string | null;
   reason: string;
   status: "open" | "resolved";
+  resolutionAction: string | null;
+  resolutionNote: string | null;
   createdAt: Date;
   resolvedAt: Date | null;
 };

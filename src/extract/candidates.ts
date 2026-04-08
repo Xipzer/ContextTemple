@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { asc, desc, eq } from "drizzle-orm";
 
 import type { TempleDatabase } from "../db.ts";
+import { clusterEmbeddingItems } from "../embeddings/cluster.ts";
+import { embedTexts } from "../embeddings/provider.ts";
 import { DatabaseQueryError, ValidationError } from "../errors.ts";
 import { extractionRuns, extractedCandidates, transcriptSources } from "../schema.ts";
 import { buildFingerprint, summarizeContent } from "../text.ts";
@@ -11,8 +13,10 @@ import { listTranscriptEvents } from "../ingest/transcripts.ts";
 import type { StoredTranscriptEvent } from "../ingest/types.ts";
 import type { BehavioralDimension } from "../types.ts";
 import type {
+  ExtractionCandidateCluster,
   ExtractionCandidateDraft,
   ExtractionRun,
+  ExtractionCandidateReviewStatus,
   StoredExtractionCandidate,
   TranscriptExtractionResult,
 } from "./types.ts";
@@ -112,11 +116,15 @@ export async function extractTranscriptCandidates({
       evidence: draft.evidence,
       confidence: draft.confidence,
       sourceEventIdsJson,
-      metadataJson,
-      createdAt,
-    });
+    metadataJson,
+    reviewStatus: "pending",
+    reviewNote: null,
+    reviewedAt: null,
+    promotedAt: null,
+    createdAt,
+  });
 
-    storedCandidates.push({
+  storedCandidates.push({
       id: candidateId,
       extractionRunId: runId,
       transcriptId,
@@ -128,6 +136,10 @@ export async function extractTranscriptCandidates({
       confidence: draft.confidence,
       sourceEventIds: draft.sourceEventIds,
       metadata: draft.metadata,
+      reviewStatus: "pending",
+      reviewNote: null,
+      reviewedAt: null,
+      promotedAt: null,
       createdAt,
     });
   }
@@ -175,10 +187,12 @@ export async function listExtractionCandidates({
   temple,
   transcriptId,
   extractionRunId,
+  reviewStatus,
 }: {
   temple: TempleDatabase;
   transcriptId?: string | null;
   extractionRunId?: string | null;
+  reviewStatus?: ExtractionCandidateReviewStatus | null;
 }) {
   const rows = await temple.db
     .select()
@@ -190,8 +204,82 @@ export async function listExtractionCandidates({
   return rows
     .filter((row) => (transcriptId?.trim() ? row.transcriptId === transcriptId.trim() : true))
     .filter((row) => (extractionRunId?.trim() ? row.extractionRunId === extractionRunId.trim() : true))
+    .filter((row) => (reviewStatus ? row.reviewStatus === reviewStatus : true))
     .map(mapExtractionCandidate);
 }
+
+export async function reviewExtractionCandidate({
+  temple,
+  candidateId,
+  status,
+  note,
+}: {
+  temple: TempleDatabase;
+  candidateId: string;
+  status: ExtractedCandidateReviewMutation;
+  note?: string | null;
+}) {
+  const rows = await temple.db.select().from(extractedCandidates).where(eq(extractedCandidates.id, candidateId)).catch(
+    (cause) => new DatabaseQueryError({ operation: "fetch extraction candidate for review", cause }),
+  );
+  if (rows instanceof Error) return rows;
+
+  const candidate = rows[0];
+  if (!candidate) return new ValidationError({ field: "candidateId", reason: "was not found" });
+
+  const reviewStatus = status === "approve" ? "approved" : status === "reject" ? "rejected" : "pending";
+  const updateResult = await temple.db
+    .update(extractedCandidates)
+    .set({ reviewStatus, reviewNote: note?.trim() || null, reviewedAt: new Date() })
+    .where(eq(extractedCandidates.id, candidateId))
+    .catch((cause) => new DatabaseQueryError({ operation: "review extraction candidate", cause }));
+  if (updateResult instanceof Error) return updateResult;
+
+  return {
+    candidateId,
+    reviewStatus,
+    reviewNote: note?.trim() || null,
+  };
+}
+
+export async function clusterExtractionCandidates({
+  temple,
+  project,
+  extractionRunId,
+}: {
+  temple: TempleDatabase;
+  project?: string | null;
+  extractionRunId?: string | null;
+}) {
+  const candidates = await listExtractionCandidates({ temple, extractionRunId, reviewStatus: "pending" });
+  if (candidates instanceof Error) return candidates;
+
+  const scopedCandidates = candidates.filter((candidate) => (project?.trim() ? candidate.project === project.trim() : true));
+  if (scopedCandidates.length === 0) return [] satisfies ExtractionCandidateCluster[];
+
+  const embeddings = await embedTexts({ texts: scopedCandidates.map((candidate) => candidate.statement) });
+  if (embeddings instanceof Error) return embeddings;
+
+  const clusters = clusterEmbeddingItems({
+    items: scopedCandidates.map((candidate, index) => ({
+      id: candidate.id,
+      label: candidate.statement,
+      embedding: embeddings[index]!.embedding,
+      semanticTerms: embeddings[index]!.semanticTerms,
+    })),
+    threshold: 0.87,
+  });
+
+  return clusters.map((cluster) => ({
+    id: cluster.id,
+    project: project?.trim() || null,
+    label: cluster.label,
+    candidateIds: cluster.itemIds,
+    similarity: cluster.similarity,
+  } satisfies ExtractionCandidateCluster));
+}
+
+export type ExtractedCandidateReviewMutation = "approve" | "reject" | "reset";
 
 function deriveCandidates({
   events,
@@ -378,6 +466,10 @@ function mapExtractionCandidate(row: typeof extractedCandidates.$inferSelect): S
       context: `extracted_candidate:${row.id}:source_event_ids`,
     }),
     metadata: parseCandidateMetadata({ value: row.metadataJson, context: `extracted_candidate:${row.id}:metadata` }),
+    reviewStatus: row.reviewStatus,
+    reviewNote: row.reviewNote,
+    reviewedAt: row.reviewedAt,
+    promotedAt: row.promotedAt,
     createdAt: row.createdAt,
   };
 }

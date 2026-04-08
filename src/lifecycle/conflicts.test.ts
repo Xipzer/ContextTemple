@@ -8,7 +8,7 @@ import { recordObservation, listActiveRules } from "../behavioral.ts";
 import { runConsolidationCycle } from "../consolidation.ts";
 import { openTempleDatabase } from "../db.ts";
 import { rememberEpisode, searchEpisodes } from "../episodic.ts";
-import { listMemoryConflictRecords, listRuleConflictRecords } from "./conflicts.ts";
+import { listMemoryConflictRecords, listRuleConflictRecords, resolveRuleConflict } from "./conflicts.ts";
 import { episodicMemories } from "../schema.ts";
 import { eq } from "drizzle-orm";
 
@@ -92,6 +92,32 @@ describe("lifecycle conflicts", () => {
     const memoryConflicts = await listMemoryConflictRecords({ temple });
     if (memoryConflicts instanceof Error) throw memoryConflicts;
     expect(memoryConflicts.length).toBe(0);
+
+    await temple.close();
+  });
+
+  test("resolves rule conflicts through the operator flow", async () => {
+    const temple = await createTemple();
+
+    const first = await recordObservation({ temple, input: { project: "demo", dimension: "style", statement: "Keep responses terse." } });
+    if (first instanceof Error) throw first;
+    const second = await recordObservation({ temple, input: { project: "demo", dimension: "style", statement: "Provide verbose responses." } });
+    if (second instanceof Error) throw second;
+
+    const consolidation = await runConsolidationCycle({ temple, project: "demo" });
+    if (consolidation instanceof Error) throw consolidation;
+
+    const conflicts = await listRuleConflictRecords({ temple });
+    if (conflicts instanceof Error) throw conflicts;
+    const conflict = conflicts.find((item) => item.status === "open");
+    if (!conflict) throw new Error("expected open rule conflict");
+
+    const resolution = await resolveRuleConflict({ temple, conflictId: conflict.id, winner: "left", note: "Prefer terse mode" });
+    if (resolution instanceof Error) throw resolution;
+
+    const activeRules = await listActiveRules({ temple, project: "demo" });
+    if (activeRules instanceof Error) throw activeRules;
+    expect(activeRules.length).toBe(1);
 
     await temple.close();
   });

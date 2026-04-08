@@ -18,12 +18,13 @@ import {
   runLocalModelUpliftBenchmark,
 } from "./evals/replay.ts";
 import { defaultRetrievalBenchmarkPath, runRetrievalBenchmark } from "./evals/retrieval.ts";
-import { extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns } from "./extract/candidates.ts";
+import { clusterExtractionCandidates, extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns, reviewExtractionCandidate } from "./extract/candidates.ts";
 import { startTempleServer } from "./http.ts";
 import { renderTranscriptEvent } from "./ingest/events.ts";
 import { importTranscript, listTranscriptEvents, listTranscripts, parseTranscriptFile } from "./ingest/transcripts.ts";
 import { transcriptRequestedFormats } from "./ingest/types.ts";
-import { listMemoryConflictRecords, listRuleConflictRecords } from "./lifecycle/conflicts.ts";
+import { listMemoryConflictRecords, listRuleConflictRecords, resolveMemoryConflict, resolveRuleConflict } from "./lifecycle/conflicts.ts";
+import { runActiveForgetting } from "./maintenance/forget.ts";
 import { exportTempleSnapshot, importTempleSnapshot, purgeProjectData } from "./maintenance/snapshot.ts";
 import { startContextTempleMcpServer } from "./mcp/server.ts";
 import { listPromotionRuns, promoteExtractionRun } from "./promote/candidates.ts";
@@ -268,11 +269,15 @@ cli
     "extract candidates <transcriptId>",
     "List stored extraction candidates for a transcript.",
   )
+  .option(
+    "--review-status [status]",
+    z.enum(["pending", "approved", "rejected", "promoted"]).describe("Optional review state filter for extracted candidates."),
+  )
   .action(async (transcriptId, options) => {
     const temple = await openTempleDatabase({ homeDir: options.home });
     if (temple instanceof Error) return printError(temple);
 
-    const candidates = await listExtractionCandidates({ temple, transcriptId });
+    const candidates = await listExtractionCandidates({ temple, transcriptId, reviewStatus: options.reviewStatus });
     await temple.close();
     if (candidates instanceof Error) return printError(candidates);
 
@@ -291,14 +296,83 @@ cli
 
 cli
   .command(
+    "review candidate <candidateId>",
+    "Approve, reject, or reset an extracted candidate before promotion.",
+  )
+  .option(
+    "--status <status>",
+    z.enum(["approve", "reject", "reset"]).describe("Review action to apply to the extracted candidate."),
+  )
+  .option(
+    "--note [note]",
+    z.string().describe("Optional review note stored with the candidate."),
+  )
+  .action(async (candidateId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await reviewExtractionCandidate({
+      temple,
+      candidateId,
+      status: options.status,
+      note: options.note,
+    });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: `${result.candidateId} -> ${result.reviewStatus}`,
+      value: result,
+    });
+  });
+
+cli
+  .command(
+    "review clusters",
+    "Cluster pending extracted candidates by semantic similarity to speed up operator review.",
+  )
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for clustering extracted candidates."),
+  )
+  .option(
+    "--extraction [extractionRunId]",
+    z.string().describe("Optional extraction run id for narrowing clusters."),
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const clusters = await clusterExtractionCandidates({
+      temple,
+      project: options.project,
+      extractionRunId: options.extraction,
+    });
+    await temple.close();
+    if (clusters instanceof Error) return printError(clusters);
+
+    return printOutput({
+      json: options.json,
+      human: clusters.map((cluster) => `${cluster.id} size=${cluster.candidateIds.length} similarity=${cluster.similarity}`).join("\n") || "No candidate clusters",
+      value: clusters,
+    });
+  });
+
+cli
+  .command(
     "promote extraction <extractionRunId>",
     "Promote extracted candidates into durable observations and episodic memories using the current promotion policy.",
+  )
+  .option(
+    "--require-approval",
+    "Only promote candidates that have been explicitly approved through the review flow.",
   )
   .action(async (extractionRunId, options) => {
     const temple = await openTempleDatabase({ homeDir: options.home });
     if (temple instanceof Error) return printError(temple);
 
-    const result = await promoteExtractionRun({ temple, extractionRunId });
+    const result = await promoteExtractionRun({ temple, extractionRunId, requireApproval: options.requireApproval });
     await temple.close();
     if (result instanceof Error) return printError(result);
 
@@ -310,6 +384,7 @@ cli
           : `Created promotion run ${result.run.id}`,
         `observations: ${result.promotedObservationIds.length}`,
         `episodic memories: ${result.promotedMemoryIds.length}`,
+        `skipped candidates: ${result.skippedCandidateIds.length}`,
       ].join("\n"),
       value: result,
     });
@@ -567,6 +642,27 @@ cli
   });
 
 cli
+  .command("conflicts resolve-rule <conflictId>", "Resolve a rule conflict by selecting which side should remain active.")
+  .option(
+    "--winner <winner>",
+    z.enum(["left", "right", "both"]).describe("Which side should win the conflict resolution."),
+  )
+  .option(
+    "--note [note]",
+    z.string().describe("Optional operator note attached to the resolution."),
+  )
+  .action(async (conflictId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await resolveRuleConflict({ temple, conflictId, winner: options.winner, note: options.note });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({ json: options.json, human: `${conflictId} resolved -> ${result.winner}`, value: result });
+  });
+
+cli
   .command("conflicts memories", "List detected episodic memory conflicts and supersession issues.")
   .action(async (options) => {
     const temple = await openTempleDatabase({ homeDir: options.home });
@@ -587,6 +683,27 @@ cli
   });
 
 cli
+  .command("conflicts resolve-memory <conflictId>", "Resolve a memory conflict by selecting the winner or restoring both.")
+  .option(
+    "--winner <winner>",
+    z.enum(["left", "right", "both"]).describe("Which side should win the memory conflict resolution."),
+  )
+  .option(
+    "--note [note]",
+    z.string().describe("Optional operator note attached to the memory conflict resolution."),
+  )
+  .action(async (conflictId, options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await resolveMemoryConflict({ temple, conflictId, winner: options.winner, note: options.note });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({ json: options.json, human: `${conflictId} resolved -> ${result.winner}`, value: result });
+  });
+
+cli
   .command("snapshot export <output>", "Copy the local SQLite store to a backup path for export and recovery.")
   .action(async (output, options) => {
     const temple = await openTempleDatabase({ homeDir: options.home });
@@ -598,6 +715,45 @@ cli
     return printOutput({
       json: options.json,
       human: `Exported ContextTemple snapshot to ${result.outputPath}`,
+      value: result,
+    });
+  });
+
+cli
+  .command("memory forget", "Archive low-value active memories using usefulness feedback and age thresholds.")
+  .option(
+    "--project [project]",
+    z.string().describe("Optional project scope for active forgetting."),
+  )
+  .option(
+    "--usefulness [threshold]",
+    z.number().default(0.25).describe("Archive memories at or below this usefulness score."),
+  )
+  .option(
+    "--age-days [days]",
+    z.int().default(90).describe("Minimum age in days before a low-value memory can be archived."),
+  )
+  .option(
+    "--dry-run",
+    "Preview which memories would be archived without changing their status.",
+  )
+  .action(async (options) => {
+    const temple = await openTempleDatabase({ homeDir: options.home });
+    if (temple instanceof Error) return printError(temple);
+
+    const result = await runActiveForgetting({
+      temple,
+      project: options.project,
+      usefulnessThreshold: options.usefulness,
+      maxAgeDays: options.ageDays,
+      dryRun: options.dryRun,
+    });
+    await temple.close();
+    if (result instanceof Error) return printError(result);
+
+    return printOutput({
+      json: options.json,
+      human: `${options.dryRun ? "would archive" : "archived"} ${result.archivedMemoryIds.length} memories`,
       value: result,
     });
   });

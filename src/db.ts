@@ -49,6 +49,8 @@ const bootstrapStatements = [
     project TEXT,
     reason TEXT NOT NULL,
     status TEXT NOT NULL,
+    resolution_action TEXT,
+    resolution_note TEXT,
     created_at INTEGER NOT NULL,
     resolved_at INTEGER,
     FOREIGN KEY (left_rule_id) REFERENCES behavioral_rules(id) ON DELETE CASCADE,
@@ -64,9 +66,15 @@ const bootstrapStatements = [
     keywords_json TEXT NOT NULL,
     semantic_terms_json TEXT NOT NULL,
     embedding_json TEXT NOT NULL,
+    embedding_provider TEXT NOT NULL,
+    embedding_model TEXT,
     status TEXT NOT NULL,
     superseded_by_memory_id TEXT,
     salience REAL NOT NULL,
+    positive_feedback_count INTEGER NOT NULL,
+    negative_feedback_count INTEGER NOT NULL,
+    usefulness_score REAL NOT NULL,
+    last_feedback_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_accessed_at INTEGER,
@@ -79,6 +87,8 @@ const bootstrapStatements = [
     project TEXT,
     reason TEXT NOT NULL,
     status TEXT NOT NULL,
+    resolution_action TEXT,
+    resolution_note TEXT,
     created_at INTEGER NOT NULL,
     resolved_at INTEGER,
     FOREIGN KEY (left_memory_id) REFERENCES episodic_memories(id) ON DELETE CASCADE,
@@ -138,6 +148,10 @@ const bootstrapStatements = [
     confidence REAL NOT NULL,
     source_event_ids_json TEXT NOT NULL,
     metadata_json TEXT NOT NULL,
+    review_status TEXT NOT NULL,
+    review_note TEXT,
+    reviewed_at INTEGER,
+    promoted_at INTEGER,
     created_at INTEGER NOT NULL,
     FOREIGN KEY (extraction_run_id) REFERENCES extraction_runs(id) ON DELETE CASCADE,
     FOREIGN KEY (transcript_id) REFERENCES transcript_sources(id) ON DELETE CASCADE
@@ -236,6 +250,160 @@ export async function openTempleDatabase({ homeDir }: { homeDir?: string } = {})
     return memorySupersededMigration;
   }
 
+  const memoryEmbeddingProviderMigration = await client.execute("ALTER TABLE episodic_memories ADD COLUMN embedding_provider TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryEmbeddingProviderMigration instanceof Error) {
+    await closeClient(client);
+    return memoryEmbeddingProviderMigration;
+  }
+
+  const memoryEmbeddingModelMigration = await client.execute("ALTER TABLE episodic_memories ADD COLUMN embedding_model TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryEmbeddingModelMigration instanceof Error) {
+    await closeClient(client);
+    return memoryEmbeddingModelMigration;
+  }
+
+  const memoryPositiveFeedbackMigration = await client.execute("ALTER TABLE episodic_memories ADD COLUMN positive_feedback_count INTEGER;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryPositiveFeedbackMigration instanceof Error) {
+    await closeClient(client);
+    return memoryPositiveFeedbackMigration;
+  }
+
+  const memoryNegativeFeedbackMigration = await client.execute("ALTER TABLE episodic_memories ADD COLUMN negative_feedback_count INTEGER;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryNegativeFeedbackMigration instanceof Error) {
+    await closeClient(client);
+    return memoryNegativeFeedbackMigration;
+  }
+
+  const memoryUsefulnessMigration = await client.execute("ALTER TABLE episodic_memories ADD COLUMN usefulness_score REAL;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryUsefulnessMigration instanceof Error) {
+    await closeClient(client);
+    return memoryUsefulnessMigration;
+  }
+
+  const memoryLastFeedbackMigration = await client.execute("ALTER TABLE episodic_memories ADD COLUMN last_feedback_at INTEGER;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryLastFeedbackMigration instanceof Error) {
+    await closeClient(client);
+    return memoryLastFeedbackMigration;
+  }
+
+  const ruleConflictResolutionActionMigration = await client.execute("ALTER TABLE rule_conflicts ADD COLUMN resolution_action TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (ruleConflictResolutionActionMigration instanceof Error) {
+    await closeClient(client);
+    return ruleConflictResolutionActionMigration;
+  }
+
+  const ruleConflictResolutionNoteMigration = await client.execute("ALTER TABLE rule_conflicts ADD COLUMN resolution_note TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (ruleConflictResolutionNoteMigration instanceof Error) {
+    await closeClient(client);
+    return ruleConflictResolutionNoteMigration;
+  }
+
+  const memoryConflictResolutionActionMigration = await client.execute("ALTER TABLE memory_conflicts ADD COLUMN resolution_action TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryConflictResolutionActionMigration instanceof Error) {
+    await closeClient(client);
+    return memoryConflictResolutionActionMigration;
+  }
+
+  const memoryConflictResolutionNoteMigration = await client.execute("ALTER TABLE memory_conflicts ADD COLUMN resolution_note TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (memoryConflictResolutionNoteMigration instanceof Error) {
+    await closeClient(client);
+    return memoryConflictResolutionNoteMigration;
+  }
+
+  const extractedCandidateReviewStatusMigration = await client.execute("ALTER TABLE extracted_candidates ADD COLUMN review_status TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (extractedCandidateReviewStatusMigration instanceof Error) {
+    await closeClient(client);
+    return extractedCandidateReviewStatusMigration;
+  }
+
+  const extractedCandidateReviewNoteMigration = await client.execute("ALTER TABLE extracted_candidates ADD COLUMN review_note TEXT;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (extractedCandidateReviewNoteMigration instanceof Error) {
+    await closeClient(client);
+    return extractedCandidateReviewNoteMigration;
+  }
+
+  const extractedCandidateReviewedAtMigration = await client.execute("ALTER TABLE extracted_candidates ADD COLUMN reviewed_at INTEGER;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (extractedCandidateReviewedAtMigration instanceof Error) {
+    await closeClient(client);
+    return extractedCandidateReviewedAtMigration;
+  }
+
+  const extractedCandidatePromotedAtMigration = await client.execute("ALTER TABLE extracted_candidates ADD COLUMN promoted_at INTEGER;").catch(
+    (cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return error.message.includes("duplicate column name") ? null : new DatabaseBootstrapError({ path: paths.dbPath, cause });
+    },
+  );
+  if (extractedCandidatePromotedAtMigration instanceof Error) {
+    await closeClient(client);
+    return extractedCandidatePromotedAtMigration;
+  }
+
   const semanticTermsBackfill = await client
     .execute("UPDATE episodic_memories SET semantic_terms_json = '[]' WHERE semantic_terms_json IS NULL;")
     .catch((cause) => new DatabaseBootstrapError({ path: paths.dbPath, cause }));
@@ -258,6 +426,46 @@ export async function openTempleDatabase({ homeDir }: { homeDir?: string } = {})
   if (memoryStatusBackfill instanceof Error) {
     await closeClient(client);
     return memoryStatusBackfill;
+  }
+
+  const memoryProviderBackfill = await client
+    .execute("UPDATE episodic_memories SET embedding_provider = 'hashed' WHERE embedding_provider IS NULL;")
+    .catch((cause) => new DatabaseBootstrapError({ path: paths.dbPath, cause }));
+  if (memoryProviderBackfill instanceof Error) {
+    await closeClient(client);
+    return memoryProviderBackfill;
+  }
+
+  const memoryPositiveFeedbackBackfill = await client
+    .execute("UPDATE episodic_memories SET positive_feedback_count = 0 WHERE positive_feedback_count IS NULL;")
+    .catch((cause) => new DatabaseBootstrapError({ path: paths.dbPath, cause }));
+  if (memoryPositiveFeedbackBackfill instanceof Error) {
+    await closeClient(client);
+    return memoryPositiveFeedbackBackfill;
+  }
+
+  const memoryNegativeFeedbackBackfill = await client
+    .execute("UPDATE episodic_memories SET negative_feedback_count = 0 WHERE negative_feedback_count IS NULL;")
+    .catch((cause) => new DatabaseBootstrapError({ path: paths.dbPath, cause }));
+  if (memoryNegativeFeedbackBackfill instanceof Error) {
+    await closeClient(client);
+    return memoryNegativeFeedbackBackfill;
+  }
+
+  const memoryUsefulnessBackfill = await client
+    .execute("UPDATE episodic_memories SET usefulness_score = 0.5 WHERE usefulness_score IS NULL;")
+    .catch((cause) => new DatabaseBootstrapError({ path: paths.dbPath, cause }));
+  if (memoryUsefulnessBackfill instanceof Error) {
+    await closeClient(client);
+    return memoryUsefulnessBackfill;
+  }
+
+  const candidateReviewStatusBackfill = await client
+    .execute("UPDATE extracted_candidates SET review_status = 'pending' WHERE review_status IS NULL;")
+    .catch((cause) => new DatabaseBootstrapError({ path: paths.dbPath, cause }));
+  if (candidateReviewStatusBackfill instanceof Error) {
+    await closeClient(client);
+    return candidateReviewStatusBackfill;
   }
 
   return {

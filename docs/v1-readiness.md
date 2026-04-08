@@ -14,7 +14,7 @@ ContextTemple is **not approved for first real deployment** until every required
 
 ## Release Note
 
-The `1.0.0` release includes the full required subsystem surface described in this document.
+The `1.1.0` release includes the full required subsystem surface described in this document.
 
 The currently implemented benchmark harness is fixture-backed and deterministic. It is sufficient for a release-grade local-first baseline, but future versions should continue expanding the breadth and difficulty of the benchmark corpus.
 
@@ -52,12 +52,12 @@ The following are explicitly out of scope for the first real deployment gate:
 │ Transcript ingestion          │ Present                      │ Required                     │
 │ Semantic extraction           │ Present (heuristic)          │ Required                     │
 │ Candidate promotion           │ Present                      │ Required                     │
-│ Embeddings                    │ Present (local hashed)       │ Required                     │
+│ Embeddings                    │ Present (provider-backed)    │ Required                     │
 │ Hybrid retrieval              │ Present                      │ Required                     │
 │ Reranking                     │ Present                      │ Required                     │
 │ Runtime orchestrator          │ Present                      │ Required                     │
 │ Contradiction handling        │ Present                      │ Required                     │
-│ Memory expiry / retirement    │ Present (basic)              │ Required                     │
+│ Memory expiry / retirement    │ Present                      │ Required                     │
 │ Evaluation harness            │ Present                      │ Required                     │
 │ MCP interface                 │ Present                      │ Recommended, not blocking    │
 │ llama.cpp / local bridge      │ Present                      │ Required for local use       │
@@ -523,13 +523,6 @@ then it is still pre-v1.
 
 ## Immediate next milestone
 
-The next milestone after the current v1 surface should not be MCP.
+The originally planned core v1 surface is now implemented.
 
-It should be:
-
-1. stronger learned embedding providers
-2. operator-facing review flows for conflicts and promotions
-3. streamed local-model bridge support
-4. MCP interface
-
-Those four items create the largest real capability gain for local models.
+Further work from this point is optional expansion rather than unfinished release scope.

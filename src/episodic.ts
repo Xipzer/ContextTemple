@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 
 import type { TempleDatabase } from "./db.ts";
+import { embedText } from "./embeddings/provider.ts";
 import { DatabaseQueryError, ValidationError } from "./errors.ts";
 import { applyMemoryLifecycle } from "./lifecycle/conflicts.ts";
 import { episodicMemories, retrievalEvents } from "./schema.ts";
 import { extractKeywords, summarizeContent } from "./text.ts";
-import { buildSemanticIndex } from "./retrieval/semantic.ts";
 import { rankHybridMemories, type IndexedMemory } from "./retrieval/hybrid.ts";
 import { rerankHybridMemories } from "./retrieval/rerank.ts";
 import { clamp, parseJsonNumberArray, parseJsonStringArray, stringifyJson } from "./utils.ts";
@@ -23,9 +23,15 @@ function mapMemory(row: typeof episodicMemories.$inferSelect): StoredMemory {
     tags: parseJsonStringArray({ value: row.tagsJson, context: `memory:${row.id}:tags` }),
     keywords: parseJsonStringArray({ value: row.keywordsJson, context: `memory:${row.id}:keywords` }),
     semanticTerms: parseJsonStringArray({ value: row.semanticTermsJson, context: `memory:${row.id}:semantic_terms` }),
+    embeddingProvider: row.embeddingProvider,
+    embeddingModel: row.embeddingModel,
     status: row.status,
     supersededByMemoryId: row.supersededByMemoryId,
     salience: row.salience,
+    positiveFeedbackCount: row.positiveFeedbackCount,
+    negativeFeedbackCount: row.negativeFeedbackCount,
+    usefulnessScore: row.usefulnessScore,
+    lastFeedbackAt: row.lastFeedbackAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastAccessedAt: row.lastAccessedAt,
@@ -37,24 +43,10 @@ function mapIndexedMemory(row: typeof episodicMemories.$inferSelect): IndexedMem
   const semanticTerms = parseJsonStringArray({ value: row.semanticTermsJson, context: `memory:${row.id}:semantic_terms` });
   const embedding = parseJsonNumberArray({ value: row.embeddingJson, context: `memory:${row.id}:embedding` });
 
-  if (semanticTerms.length > 0 && embedding.length > 0) {
-    return {
-      ...mapMemory(row),
-      semanticTerms,
-      embedding,
-    };
-  }
-
-  const rebuilt = buildSemanticIndex({
-    content: row.content,
-    summary: row.summary,
-    tags: parseJsonStringArray({ value: row.tagsJson, context: `memory:${row.id}:tags` }),
-  });
-
   return {
     ...mapMemory(row),
-    semanticTerms: rebuilt.semanticTerms,
-    embedding: rebuilt.embedding,
+    semanticTerms,
+    embedding,
   };
 }
 
@@ -72,7 +64,8 @@ export async function rememberEpisode({
 
   const tags = [...new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))];
   const summary = summarizeContent(content);
-  const semanticIndex = buildSemanticIndex({ content, summary, tags });
+  const embedded = await embedText({ text: `${summary}\n${content}`, tags });
+  if (embedded instanceof Error) return embedded;
   const keywords = extractKeywords({ content, tags });
   const project = input.project?.trim() || null;
   const source = input.source?.trim() || null;
@@ -93,9 +86,9 @@ export async function rememberEpisode({
   if (tagsJson instanceof Error) return tagsJson;
   const keywordsJson = stringifyJson({ value: keywords, context: "episodic keywords" });
   if (keywordsJson instanceof Error) return keywordsJson;
-  const semanticTermsJson = stringifyJson({ value: semanticIndex.semanticTerms, context: "episodic semantic terms" });
+  const semanticTermsJson = stringifyJson({ value: embedded.semanticTerms, context: "episodic semantic terms" });
   if (semanticTermsJson instanceof Error) return semanticTermsJson;
-  const embeddingJson = stringifyJson({ value: semanticIndex.embedding, context: "episodic embedding" });
+  const embeddingJson = stringifyJson({ value: embedded.embedding, context: "episodic embedding" });
   if (embeddingJson instanceof Error) return embeddingJson;
 
   const now = new Date();
@@ -109,9 +102,15 @@ export async function rememberEpisode({
     keywordsJson,
     semanticTermsJson,
     embeddingJson,
+    embeddingProvider: embedded.provider,
+    embeddingModel: embedded.model,
     status: "active" as const,
     supersededByMemoryId: null,
     salience: clamp(input.salience ?? 5, 1, 10),
+    positiveFeedbackCount: 0,
+    negativeFeedbackCount: 0,
+    usefulnessScore: 0.5,
+    lastFeedbackAt: null,
     createdAt: now,
     updatedAt: now,
     lastAccessedAt: null,
@@ -127,7 +126,7 @@ export async function rememberEpisode({
     temple,
     insertedMemory: {
       ...mapIndexedMemory(record),
-      embedding: semanticIndex.embedding,
+      embedding: embedded.embedding,
     },
     candidateMemories: existingRows.filter((row) => row.status === "active").map(mapIndexedMemory),
   });
@@ -155,7 +154,14 @@ export async function searchEpisodes({
   const memories = await fetchIndexedMemories({ temple, project });
   if (memories instanceof Error) return memories;
 
-  const ranked = rankHybridMemories({ memories, query: trimmedQuery });
+  const queryEmbedding = await embedText({ text: trimmedQuery });
+  if (queryEmbedding instanceof Error) return queryEmbedding;
+
+  const ranked = rankHybridMemories({
+    memories,
+    query: trimmedQuery,
+    queryIndex: { semanticTerms: queryEmbedding.semanticTerms, embedding: queryEmbedding.embedding },
+  });
   const reranked = rerankHybridMemories({ ranked, query: trimmedQuery }).slice(0, limit);
   const results: MemorySearchResult[] = [];
 
@@ -210,9 +216,15 @@ function toPublicMemory(memory: IndexedMemory): StoredMemory {
     tags: memory.tags,
     keywords: memory.keywords,
     semanticTerms: memory.semanticTerms,
+    embeddingProvider: memory.embeddingProvider,
+    embeddingModel: memory.embeddingModel,
     status: memory.status,
     supersededByMemoryId: memory.supersededByMemoryId,
     salience: memory.salience,
+    positiveFeedbackCount: memory.positiveFeedbackCount,
+    negativeFeedbackCount: memory.negativeFeedbackCount,
+    usefulnessScore: memory.usefulnessScore,
+    lastFeedbackAt: memory.lastFeedbackAt,
     createdAt: memory.createdAt,
     updatedAt: memory.updatedAt,
     lastAccessedAt: memory.lastAccessedAt,
@@ -261,9 +273,20 @@ export async function recordRetrievalFeedback({
   if (updateEventResult instanceof Error) return updateEventResult;
 
   const nextSalience = clamp(memoryRow.salience + (accepted ? 0.35 : -0.15), 1, 10);
+  const positiveFeedbackCount = memoryRow.positiveFeedbackCount + (accepted ? 1 : 0);
+  const negativeFeedbackCount = memoryRow.negativeFeedbackCount + (accepted ? 0 : 1);
+  const totalFeedback = positiveFeedbackCount + negativeFeedbackCount;
+  const usefulnessScore = totalFeedback === 0 ? 0.5 : positiveFeedbackCount / totalFeedback;
   const updateMemoryResult = await temple.db
     .update(episodicMemories)
-    .set({ salience: nextSalience, updatedAt: new Date() })
+    .set({
+      salience: nextSalience,
+      positiveFeedbackCount,
+      negativeFeedbackCount,
+      usefulnessScore,
+      lastFeedbackAt: new Date(),
+      updatedAt: new Date(),
+    })
     .where(eq(episodicMemories.id, memoryRow.id))
     .catch((cause) => new DatabaseQueryError({ operation: "update episodic salience", cause }));
   if (updateMemoryResult instanceof Error) return updateMemoryResult;
@@ -272,6 +295,7 @@ export async function recordRetrievalFeedback({
     retrievalId,
     accepted,
     salience: nextSalience,
+    usefulnessScore,
   };
 }
 

@@ -2,7 +2,8 @@ import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import type { ExtractionCandidateKind } from "./extract/types.ts";
 import type { TranscriptActor, TranscriptEventType, TranscriptFormat } from "./ingest/types.ts";
-import type { BehavioralDimension, MemoryStatus, RuleScope, RuleStatus } from "./types.ts";
+import type { BehavioralDimension, EmbeddingProviderName, MemoryStatus, RuleScope, RuleStatus } from "./types.ts";
+import type { ExtractionCandidateReviewStatus } from "./extract/types.ts";
 
 export const observations = sqliteTable("observations", {
   id: text("id").primaryKey(),
@@ -44,6 +45,8 @@ export const ruleConflicts = sqliteTable("rule_conflicts", {
   project: text("project"),
   reason: text("reason").notNull(),
   status: text("status").$type<"open" | "resolved">().notNull(),
+  resolutionAction: text("resolution_action"),
+  resolutionNote: text("resolution_note"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
 });
@@ -58,9 +61,15 @@ export const episodicMemories = sqliteTable("episodic_memories", {
   keywordsJson: text("keywords_json").notNull(),
   semanticTermsJson: text("semantic_terms_json").notNull(),
   embeddingJson: text("embedding_json").notNull(),
+  embeddingProvider: text("embedding_provider").$type<EmbeddingProviderName>().notNull(),
+  embeddingModel: text("embedding_model"),
   status: text("status").$type<MemoryStatus>().notNull(),
   supersededByMemoryId: text("superseded_by_memory_id"),
   salience: real("salience").notNull(),
+  positiveFeedbackCount: integer("positive_feedback_count").notNull(),
+  negativeFeedbackCount: integer("negative_feedback_count").notNull(),
+  usefulnessScore: real("usefulness_score").notNull(),
+  lastFeedbackAt: integer("last_feedback_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   lastAccessedAt: integer("last_accessed_at", { mode: "timestamp_ms" }),
@@ -78,6 +87,8 @@ export const memoryConflicts = sqliteTable("memory_conflicts", {
   project: text("project"),
   reason: text("reason").notNull(),
   status: text("status").$type<"open" | "resolved">().notNull(),
+  resolutionAction: text("resolution_action"),
+  resolutionNote: text("resolution_note"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
 });
@@ -146,6 +157,10 @@ export const extractedCandidates = sqliteTable("extracted_candidates", {
   confidence: real("confidence").notNull(),
   sourceEventIdsJson: text("source_event_ids_json").notNull(),
   metadataJson: text("metadata_json").notNull(),
+  reviewStatus: text("review_status").$type<ExtractionCandidateReviewStatus>().notNull(),
+  reviewNote: text("review_note"),
+  reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
+  promotedAt: integer("promoted_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 

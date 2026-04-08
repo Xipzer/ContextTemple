@@ -34,9 +34,6 @@ export function createLlamaCppBridgeApp({
 
     const request = validateChatRequest(body);
     if (request instanceof Error) return bridgeError(c, request);
-    if (request.stream) {
-      return bridgeError(c, new ValidationError({ field: "stream", reason: "streaming is not supported by the current bridge" }));
-    }
 
     const project = c.req.header("x-contexttemple-project") ?? defaultProject ?? null;
     const runtimeMessages = request.messages.map(toRuntimeMessage);
@@ -55,11 +52,21 @@ export function createLlamaCppBridgeApp({
       },
       body: JSON.stringify({
         ...request,
-        stream: false,
+        stream: request.stream ?? false,
         messages: bridgedMessages,
       }),
     }).catch((cause) => new ValidationError({ field: "llamaCppUrl", reason: "request failed", cause }));
     if (response instanceof Error) return bridgeError(c, response);
+
+    if (request.stream) {
+      return streamBridgeResponse({
+        response,
+        temple,
+        project,
+        sessionId: c.req.header("x-contexttemple-session") ?? null,
+        runtimeMessages,
+      });
+    }
 
     const payload = await response.json().catch(
       (cause: Error) => new ValidationError({ field: "llamaCpp response", reason: "must be valid JSON", cause }),
@@ -172,6 +179,116 @@ function extractAssistantMessage(payload: unknown) {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
   const choices = (payload as { choices?: Array<{ message?: { content?: string } }> }).choices;
   return choices?.[0]?.message?.content ?? null;
+}
+
+function streamBridgeResponse({
+  response,
+  temple,
+  project,
+  sessionId,
+  runtimeMessages,
+}: {
+  response: Response;
+  temple: TempleDatabase;
+  project: string | null;
+  sessionId: string | null;
+  runtimeMessages: RuntimeMessage[];
+}) {
+  if (!response.body) {
+    return bridgeError(
+      { json: (body: unknown, status?: number) => Response.json(body, { status }) },
+      new ValidationError({ field: "llamaCpp stream", reason: "response had no body" }),
+      response.status,
+    );
+  }
+
+  const reader = response.body.getReader();
+  const textDecoder = new TextDecoder();
+  const textEncoder = new TextEncoder();
+  let buffer = "";
+  let assistantMessage = "";
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        await maybeWriteback({ temple, project, sessionId, runtimeMessages, assistantMessage });
+        controller.close();
+        return;
+      }
+
+      if (value) {
+        controller.enqueue(value);
+        buffer += textDecoder.decode(value, { stream: true });
+        assistantMessage += extractAssistantDelta(buffer);
+        buffer = trimProcessedBuffer(buffer);
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") ?? "text/event-stream",
+      "cache-control": response.headers.get("cache-control") ?? "no-cache",
+      connection: response.headers.get("connection") ?? "keep-alive",
+      "transfer-encoding": response.headers.get("transfer-encoding") ?? "chunked",
+    },
+  });
+}
+
+async function maybeWriteback({
+  temple,
+  project,
+  sessionId,
+  runtimeMessages,
+  assistantMessage,
+}: {
+  temple: TempleDatabase;
+  project: string | null;
+  sessionId: string | null;
+  runtimeMessages: RuntimeMessage[];
+  assistantMessage: string;
+}) {
+  if (!assistantMessage.trim()) return;
+  const writeback = await completeRuntimeTurn({
+    temple,
+    project,
+    sessionId,
+    messages: runtimeMessages,
+    assistantMessage,
+  });
+  if (writeback instanceof Error) {
+    console.warn(`ContextTemple streaming writeback failed: ${writeback.message}`);
+  }
+}
+
+function extractAssistantDelta(buffer: string) {
+  const events = buffer.split("\n\n");
+  if (events.length <= 1) return "";
+
+  const completeEvents = events.slice(0, -1);
+  let delta = "";
+  for (const event of completeEvents) {
+    for (const line of event.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }> };
+        delta += parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content ?? "";
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return delta;
+}
+
+function trimProcessedBuffer(buffer: string) {
+  const boundary = buffer.lastIndexOf("\n\n");
+  return boundary === -1 ? buffer : buffer.slice(boundary + 2);
 }
 
 function bridgeError(

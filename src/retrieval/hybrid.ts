@@ -19,15 +19,17 @@ export function rankHybridMemories({
   memories,
   query,
   mode = "hybrid",
+  queryIndex,
 }: {
   memories: IndexedMemory[];
   query: string;
   mode?: RetrievalMode;
+  queryIndex?: { semanticTerms: string[]; embedding: number[] };
 }) {
   const trimmedQuery = query.trim();
   const queryTokens = tokenize(trimmedQuery);
   const normalizedQuery = normalizeText(trimmedQuery);
-  const semanticQuery = buildQuerySemanticIndex(trimmedQuery);
+  const semanticQuery = queryIndex ?? buildQuerySemanticIndex(trimmedQuery);
 
   return memories
     .map((memory) => ({

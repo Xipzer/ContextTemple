@@ -6,8 +6,9 @@ import { buildStartupContext } from "./context.ts";
 import type { TempleDatabase } from "./db.ts";
 import { recordRetrievalFeedback, rememberEpisode, searchEpisodes } from "./episodic.ts";
 import { ServerStartError, ValidationError } from "./errors.ts";
-import { extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns } from "./extract/candidates.ts";
-import { listMemoryConflictRecords, listRuleConflictRecords } from "./lifecycle/conflicts.ts";
+import { clusterExtractionCandidates, extractTranscriptCandidates, listExtractionCandidates, listExtractionRuns, reviewExtractionCandidate } from "./extract/candidates.ts";
+import { listMemoryConflictRecords, listRuleConflictRecords, resolveMemoryConflict, resolveRuleConflict } from "./lifecycle/conflicts.ts";
+import { runActiveForgetting } from "./maintenance/forget.ts";
 import { listPromotionRuns, promoteExtractionRun } from "./promote/candidates.ts";
 import { runConsolidationCycle } from "./consolidation.ts";
 import { recordObservation } from "./behavioral.ts";
@@ -34,6 +35,23 @@ const observationSchema = z.object({
 const feedbackSchema = z.object({
   retrievalId: z.string().min(1),
   accepted: z.boolean(),
+});
+
+const candidateReviewSchema = z.object({
+  status: z.enum(["approve", "reject", "reset"]),
+  note: z.string().optional().nullable(),
+});
+
+const conflictResolutionSchema = z.object({
+  winner: z.enum(["left", "right", "both"]),
+  note: z.string().optional().nullable(),
+});
+
+const forgettingSchema = z.object({
+  project: z.string().optional().nullable(),
+  usefulnessThreshold: z.number().min(0).max(1).optional(),
+  maxAgeDays: z.number().int().positive().optional(),
+  dryRun: z.boolean().optional(),
 });
 
 const runtimeMessageSchema = z.object({
@@ -113,9 +131,34 @@ export function createTempleApp({ temple }: { temple: TempleDatabase }) {
       temple,
       transcriptId: c.req.query("transcriptId") ?? null,
       extractionRunId: c.req.query("extractionRunId") ?? null,
+      reviewStatus: (c.req.query("reviewStatus") as "pending" | "approved" | "rejected" | "promoted" | null) ?? null,
     });
     if (candidates instanceof Error) return errorResponse(c, candidates);
     return c.json(candidates);
+  });
+
+  app.post("/api/review/candidates/:candidateId", async (c) => {
+    const body = await parseJsonBody({ c, schema: candidateReviewSchema });
+    if (body instanceof Error) return errorResponse(c, body);
+
+    const result = await reviewExtractionCandidate({
+      temple,
+      candidateId: c.req.param("candidateId"),
+      status: body.status,
+      note: body.note,
+    });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result);
+  });
+
+  app.get("/api/review/clusters", async (c) => {
+    const clusters = await clusterExtractionCandidates({
+      temple,
+      project: c.req.query("project") ?? null,
+      extractionRunId: c.req.query("extractionRunId") ?? null,
+    });
+    if (clusters instanceof Error) return errorResponse(c, clusters);
+    return c.json(clusters);
   });
 
   app.post("/api/promote/extractions/:extractionRunId", async (c) => {
@@ -142,10 +185,53 @@ export function createTempleApp({ temple }: { temple: TempleDatabase }) {
     return c.json(conflicts);
   });
 
+  app.post("/api/conflicts/rules/:conflictId/resolve", async (c) => {
+    const body = await parseJsonBody({ c, schema: conflictResolutionSchema });
+    if (body instanceof Error) return errorResponse(c, body);
+
+    const result = await resolveRuleConflict({
+      temple,
+      conflictId: c.req.param("conflictId"),
+      winner: body.winner,
+      note: body.note,
+    });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result);
+  });
+
   app.get("/api/conflicts/memories", async (c) => {
     const conflicts = await listMemoryConflictRecords({ temple });
     if (conflicts instanceof Error) return errorResponse(c, conflicts);
     return c.json(conflicts);
+  });
+
+  app.post("/api/conflicts/memories/:conflictId/resolve", async (c) => {
+    const body = await parseJsonBody({ c, schema: conflictResolutionSchema });
+    if (body instanceof Error) return errorResponse(c, body);
+
+    const result = await resolveMemoryConflict({
+      temple,
+      conflictId: c.req.param("conflictId"),
+      winner: body.winner,
+      note: body.note,
+    });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result);
+  });
+
+  app.post("/api/maintenance/forget", async (c) => {
+    const body = await parseJsonBody({ c, schema: forgettingSchema });
+    if (body instanceof Error) return errorResponse(c, body);
+
+    const result = await runActiveForgetting({
+      temple,
+      project: body.project,
+      usefulnessThreshold: body.usefulnessThreshold,
+      maxAgeDays: body.maxAgeDays,
+      dryRun: body.dryRun,
+    });
+    if (result instanceof Error) return errorResponse(c, result);
+    return c.json(result);
   });
 
   app.get("/api/search", async (c) => {
